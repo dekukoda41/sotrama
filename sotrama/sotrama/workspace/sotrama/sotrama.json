@@ -1,0 +1,84 @@
+{
+ "app": "sotrama",
+ "doctype": "Workspace",
+ "label": "Sotrama",
+ "name": "Sotrama",
+ "title": "Sotrama",
+ "module": "Sotrama",
+ "icon": "building-2",
+ "sequence_id": 1,
+ "type": "Workspace",
+ "public": 1,
+ "is_hidden": 0,
+ "hide_custom": 0,
+ "standard": 1,
+ "for_user": "",
+ "content": "[{\"id\":\"sotrama_setup_heading\",\"type\":\"header\",\"data\":{\"text\":\"Company and application setup\",\"level\":4,\"col\":12}},{\"id\":\"sotrama_company_setup_card\",\"type\":\"card\",\"data\":{\"card_name\":\"Company & HR Setup\",\"col\":6}},{\"id\":\"sotrama_fleet_setup_card\",\"type\":\"card\",\"data\":{\"card_name\":\"Fleet Configuration\",\"col\":6}}]",
+ "links": [
+  {
+   "type": "Card Break",
+   "label": "Company & HR Setup",
+   "description": "Maintain ERPNext Company records, enable Algerian registration fields and prepare the standard Frappe HR designation catalogue.",
+   "icon": "building-2",
+   "link_count": 3,
+   "hidden": 0
+  },
+  {
+   "type": "Link",
+   "label": "Companies",
+   "link_type": "DocType",
+   "link_to": "Company",
+   "hidden": 0,
+   "onboard": 0
+  },
+  {
+   "type": "Link",
+   "label": "Designations",
+   "link_type": "DocType",
+   "link_to": "Designation",
+   "hidden": 0,
+   "onboard": 0
+  },
+  {
+   "type": "Link",
+   "label": "Algerian Company & HR Settings",
+   "link_type": "DocType",
+   "link_to": "Sotrama Settings",
+   "hidden": 0,
+   "onboard": 0
+  },
+  {
+   "type": "Card Break",
+   "label": "Fleet Configuration",
+   "description": "Set company-specific fleet defaults, warehouses and operational compliance policies.",
+   "icon": "truck",
+   "link_count": 1,
+   "hidden": 0
+  },
+  {
+   "type": "Link",
+   "label": "Fleet Settings",
+   "link_type": "DocType",
+   "link_to": "TP Settings",
+   "hidden": 0,
+   "onboard": 0
+  }
+ ],
+ "roles": [
+  {
+   "role": "System Manager"
+  },
+  {
+   "role": "Fleet Manager"
+  },
+  {
+   "role": "Workshop"
+  },
+  {
+   "role": "HR Manager"
+  },
+  {
+   "role": "Accounts Manager"
+  }
+ ]
+}

@@ -4,6 +4,16 @@
  "module": "TP",
  "fields": [
   {
+   "fieldtype": "Tab Break",
+   "fieldname": "tab_incident",
+   "label": "Incident"
+  },
+  {
+   "fieldtype": "Section Break",
+   "fieldname": "section_incident",
+   "label": "Incident Details"
+  },
+  {
    "label": "Incident Date",
    "fieldname": "incident_date",
    "fieldtype": "Datetime",
@@ -20,12 +30,25 @@
    "reqd": 1
   },
   {
+   "label": "Company",
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "options": "Company",
+   "reqd": 1,
+   "read_only": 1,
+   "in_standard_filter": 1
+  },
+  {
    "label": "Driver",
    "fieldname": "driver",
    "fieldtype": "Link",
    "options": "Driver",
    "in_list_view": 1,
    "in_standard_filter": 1
+  },
+  {
+   "fieldtype": "Column Break",
+   "fieldname": "column_incident_details"
   },
   {
    "label": "Location",
@@ -49,6 +72,7 @@
    "fieldtype": "Select",
    "options": "\nReported\nAcknowledged\nIn Progress\nResolved\nClosed",
    "default": "Reported",
+   "read_only": 1,
    "in_list_view": 1,
    "in_standard_filter": 1
   },
@@ -67,15 +91,32 @@
    "description": "Engine, Transmission, Electrical, etc."
   },
   {
+   "fieldtype": "Tab Break",
+   "fieldname": "tab_resolution_evidence",
+   "label": "Resolution & Evidence"
+  },
+  {
+   "fieldtype": "Section Break",
+   "fieldname": "section_resolution",
+   "label": "Repair & Resolution",
+   "collapsible": 1
+  },
+  {
    "label": "Resolution Date",
    "fieldname": "resolution_date",
    "fieldtype": "Datetime",
+   "read_only": 1,
    "in_list_view": 1
+  },
+  {
+   "fieldtype": "Column Break",
+   "fieldname": "column_resolution_details"
   },
   {
    "label": "Resolution Notes",
    "fieldname": "resolution_notes",
-   "fieldtype": "Text Editor"
+   "fieldtype": "Text Editor",
+   "read_only": 1
   },
   {
    "label": "Downtime (Hours)",
@@ -92,6 +133,12 @@
    "options": "Maintenance Job Card",
    "read_only": 1,
    "description": "Auto-created job card for this breakdown"
+  },
+  {
+   "fieldtype": "Section Break",
+   "fieldname": "section_evidence",
+   "label": "Photos and Supporting Notes",
+   "collapsible": 1
   },
   {
    "label": "Photos",
@@ -120,8 +167,7 @@
  "is_submittable": 1,
  "track_changes": 1,
  "naming_rule": "Expression",
- "naming_expression": "BRK-.YYYY.-.####",
- "autoname": "format",
+ "autoname": "BRK-.YYYY.-.####",
  "permissions": [
   {
    "role": "System Manager",
@@ -152,8 +198,7 @@
    "print": 1,
    "email": 1,
    "export": 1,
-   "report": 1,
-   "share": 1
+   "report": 1
   },
   {
    "role": "Workshop",
@@ -163,7 +208,7 @@
    "create": 1,
    "delete": 0,
    "submit": 1,
-   "cancel": 1,
+   "cancel": 0,
    "amend": 0,
    "print": 1,
    "email": 0,
@@ -171,5 +216,7 @@
    "report": 0,
    "share": 0
   }
- ]
+ ],
+ "icon": "triangle-alert",
+ "description": "Breakdown Incident records for Sotrama public-works fleet operations."
 }

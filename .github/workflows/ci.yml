@@ -1,0 +1,1177 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-and-package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install build and lint tools
+        run: python -m pip install --upgrade pip build 'flit_core>=3.12,<4' ruff
+
+      - name: Lint
+        run: ruff check sotrama
+
+      - name: Compile Python
+        run: python -m compileall -q sotrama
+
+      - name: Verify Frappe v16 server message calls
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+
+          for path in Path("sotrama").rglob("*.py"):
+              tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
+              for node in ast.walk(tree):
+                  if not isinstance(node, ast.Call):
+                      continue
+                  function = node.func
+                  if not (isinstance(function, ast.Attribute) and function.attr == "msgprint"):
+                      continue
+                  assert not any(keyword.arg == "message" for keyword in node.keywords), (
+                      f"{path}:{node.lineno}: Frappe v16 msgprint takes its message as the first positional argument"
+                  )
+          PY
+
+      - name: Check and test Desk and Report scripts
+        run: |
+          for script in $(find sotrama -type f -name '*.js'); do
+            node --check "$script"
+          done
+          node tests/js/test_fleet_form_permissions.js
+          node tests/js/test_report_filter_dependencies.js
+
+      - name: Validate JSON metadata
+        run: |
+          python - <<'PY'
+          import ast
+          import json
+          import tomllib
+          from pathlib import Path
+
+          project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+          app_init = ast.parse(Path("sotrama/__init__.py").read_text(encoding="utf-8"))
+          app_version = next(
+              node.value.value for node in app_init.body
+              if isinstance(node, ast.Assign)
+              and any(isinstance(target, ast.Name) and target.id == "__version__" for target in node.targets)
+          )
+          assert app_version == "1.3.6", f"Expected Sotrama 1.3.6, found {app_version}"
+          assert Path("tests/js/test_fleet_form_permissions.js").is_file()
+          assert Path("tests/js/test_report_filter_dependencies.js").is_file()
+          assert Path("sotrama/public/js/operational_task.js").is_file()
+          assert project["project"]["requires-python"] == ">=3.14,<3.15"
+          frappe_dependencies = project["tool"]["bench"]["frappe-dependencies"]
+          for app in ("frappe", "erpnext", "hrms"):
+              assert frappe_dependencies[app] == ">=16.60.0,<17.0.0"
+
+          files = sorted(Path("sotrama").rglob("*.json"))
+          for path in files:
+              data = json.loads(path.read_text(encoding="utf-8"))
+              if isinstance(data, dict) and "doctype" in data:
+                  assert data.get("name"), f"Frappe record JSON is missing its name: {path}"
+          print(f"Validated {len(files)} JSON files")
+
+          settings = json.loads(Path("sotrama/sotrama/doctype/sotrama_settings/sotrama_settings.json").read_text(encoding="utf-8"))
+          settings_fields = {field["fieldname"]: field for field in settings["fields"]}
+          assert "add_public_works_designations" not in settings_fields
+          settings_js = Path("sotrama/public/js/sotrama_settings.js").read_text(encoding="utf-8")
+          settings_controller = Path("sotrama/sotrama/doctype/sotrama_settings/sotrama_settings.py").read_text(encoding="utf-8")
+          assert "Import Missing BTPH Job Titles" in settings_js
+          assert "frappe.confirm(" in settings_js
+          assert 'frappe.only_for(["System Manager", "HR Manager"])' in settings_controller
+          assert 'frappe.has_permission("Designation", "create", throw=True)' in settings_controller
+
+          designation_tree = ast.parse(Path("sotrama/designations.py").read_text(encoding="utf-8"))
+          designation_assignment = next(
+              node for node in designation_tree.body
+              if isinstance(node, ast.Assign)
+              and any(isinstance(target, ast.Name) and target.id == "PUBLIC_WORKS_DESIGNATIONS" for target in node.targets)
+          )
+          designations = ast.literal_eval(designation_assignment.value)
+          designation_names = list(designations)
+          assert len(designation_names) == 202, f"Expected 202 curated job titles, found {len(designation_names)}"
+          assert len(designation_names) == len(set(designation_names)), "BTPH designation names must be unique"
+          assert all(name and name == name.strip() for name in designation_names)
+          assert (Path("sotrama/public/js/sotrama_settings.js")).is_file()
+          hooks = ast.parse(Path("sotrama/hooks.py").read_text(encoding="utf-8"))
+          doctype_js = next(
+              node.value for node in hooks.body
+              if isinstance(node, ast.Assign)
+              and any(isinstance(target, ast.Name) and target.id == "doctype_js" for target in node.targets)
+          )
+          assert "Sotrama Settings" in ast.literal_eval(doctype_js)
+
+          job_card = json.loads(Path("sotrama/tp/doctype/maintenance_job_card/maintenance_job_card.json").read_text(encoding="utf-8"))
+          job_card_fields = {field["fieldname"]: field for field in job_card["fields"]}
+          assert "ERPNext Item" in job_card_fields["parts_used"]["description"]
+          assert "Frappe HR Employee" in job_card_fields["labour_lines"]["description"]
+          job_card_print = json.loads(Path("sotrama/tp/print_format/maintenance_job_card_report/maintenance_job_card_report.json").read_text(encoding="utf-8"))
+          assert job_card_print["print_format_builder_beta"] == 1
+          job_card_print_layout = json.loads(job_card_print["format_data"])
+          job_card_print_sections = {section["label"] for section in job_card_print_layout["sections"]}
+          assert "Spare Parts (Stock Items)" in job_card_print_sections
+          assert "Labour (Employees / Mechanics)" in job_card_print_sections
+          for print_format_path in Path("sotrama/tp/print_format").glob("*/*.json"):
+              print_format_record = json.loads(print_format_path.read_text(encoding="utf-8"))
+              assert print_format_record["print_format_builder_beta"] == 1, print_format_path
+              json.loads(print_format_record["format_data"])
+          removed_hrms_apis = ("Daily Work Summary", "Daily Work Summary Group", "Identification Document Type", "hierarchy_chart")
+          for source_path in Path("sotrama").rglob("*"):
+              if source_path.is_file() and source_path.suffix in {".py", ".js", ".json", ".md"}:
+                  source_text = source_path.read_text(encoding="utf-8")
+                  for removed_api in removed_hrms_apis:
+                      assert removed_api not in source_text, f"Removed HRMS API {removed_api} referenced in {source_path}"
+          job_card_js = Path("sotrama/public/js/job_card.js").read_text(encoding="utf-8")
+          assert "frm.perm?.[0]?.create" in job_card_js
+          assert "frm.perm?.[0]?.write" in job_card_js
+          assert "Add Spare Part (Item)" in job_card_js
+          assert "Add Mechanic (Employee)" in job_card_js
+          job_card_controller = Path("sotrama/tp/doctype/maintenance_job_card/maintenance_job_card.py").read_text(encoding="utf-8")
+          assert "self._validate_labour_lines()" in job_card_controller
+          assert "employee.company != self.company" in job_card_controller
+          assert 'frappe.only_for(["System Manager", "Fleet Manager", "Workshop"])' in job_card_controller
+          assert 'fields=["name", "employee_name", "designation"]' in job_card_controller
+          assert "search_workshop_employees" in job_card_js
+          assert "get_workshop_employee_name" in job_card_js
+          assert "frappe.db.get_value('Employee'" not in job_card_js
+          assert "parts_used_delete" in job_card_js
+          assert "labour_lines_delete" in job_card_js
+          assert "other_costs_delete" in job_card_js
+          labour = json.loads(Path("sotrama/tp/doctype/job_card_labour/job_card_labour.json").read_text(encoding="utf-8"))
+          labour_fields = {field["fieldname"]: field for field in labour["fields"]}
+          assert labour_fields["mechanic"]["label"] == "Employee (Mechanic)"
+          assert labour_fields["mechanic"]["in_list_view"]
+          assert labour_fields["mechanic_name"]["in_list_view"]
+          child_grid_fields = {
+              "inspection_item": ("category", "item_details", "status"),
+              "job_card_part": ("item", "quantity", "rate", "amount"),
+              "job_card_labour": ("mechanic", "mechanic_name", "hours", "rate", "amount"),
+              "job_card_other_cost": ("description", "category", "amount", "date"),
+              "breakdown_photo": ("photo", "caption", "photo_date"),
+              "job_card_photo": ("photo", "caption", "photo_date"),
+              "vehicle_document": ("document_type", "issue_date", "expiry_date", "attachment"),
+          }
+          for child_name, fieldnames in child_grid_fields.items():
+              child_path = Path("sotrama/tp/doctype") / child_name / f"{child_name}.json"
+              child_data = json.loads(child_path.read_text(encoding="utf-8"))
+              child_fields = {field["fieldname"]: field for field in child_data["fields"]}
+              for fieldname in fieldnames:
+                  assert child_fields[fieldname].get("in_list_view"), f"{child_name}.{fieldname} must be visible in its parent grid"
+          driver = json.loads(Path("sotrama/tp/doctype/driver/driver.json").read_text(encoding="utf-8"))
+          employee_link = next(field for field in driver["fields"] if field["fieldname"] == "employee")
+          assert "Only HR Manager and System Manager" in employee_link["description"]
+          assert "set_df_property('employee', 'read_only'" in Path("sotrama/public/js/driver.js").read_text(encoding="utf-8")
+          driver_controller = Path("sotrama/tp/doctype/driver/driver.py").read_text(encoding="utf-8")
+          assert 'frappe.only_for(["System Manager", "HR Manager"])' in driver_controller
+          inspection_js = Path("sotrama/public/js/inspection.js").read_text(encoding="utf-8")
+          assert "frm.perm?.[0]?.create" in inspection_js
+          assert "frm.perm?.[0]?.write" in inspection_js
+          assert "Add Custom Check" in inspection_js
+          assert "new frappe.ui.Dialog" in inspection_js
+          assert "inspection_items_add" in inspection_js
+          assert "inspection_items_delete" in inspection_js
+          assert "search_workshop_employees" in inspection_js
+          inspection_item = json.loads(Path("sotrama/tp/doctype/inspection_item/inspection_item.json").read_text(encoding="utf-8"))
+          inspection_status = next(field for field in inspection_item["fields"] if field["fieldname"] == "status")
+          assert inspection_status["default"] == "Not Checked"
+          assert "Not Checked" in inspection_status["options"]
+          inspection_controller = Path("sotrama/tp/doctype/vehicle_inspection/vehicle_inspection.py").read_text(encoding="utf-8")
+          assert "_validate_items(require_completed=True)" in inspection_controller
+          assert '"Conditional Pass"' in inspection_controller
+          inspection = json.loads(Path("sotrama/tp/doctype/vehicle_inspection/vehicle_inspection.json").read_text(encoding="utf-8"))
+          assert next(field for field in inspection["fields"] if field["fieldname"] == "overall_status")["read_only"]
+          inspection_permissions = inspection["permissions"]
+          for role in ("Fleet Manager", "System Manager"):
+              assert any(row["role"] == role and row.get("permlevel") == 1 and row.get("read") and row.get("write") for row in inspection_permissions)
+          inspection_item = json.loads(Path("sotrama/tp/doctype/inspection_item/inspection_item.json").read_text(encoding="utf-8"))
+          assert next(field for field in inspection_item["fields"] if field["fieldname"] == "is_safety_critical")["permlevel"] == 1
+          assert "_enforce_safety_critical_flags" in inspection_controller
+          assert "_ensure_standard_checklist" in inspection_controller
+          assert "STANDARD_INSPECTION_CHECKS" in inspection_controller
+          assert "row.is_safety_critical = check.is_safety_critical ? 1 : 0" in inspection_js
+          vehicle_controller = Path("sotrama/tp/doctype/vehicle/vehicle.py").read_text(encoding="utf-8")
+          vehicle_document_controller = Path("sotrama/tp/doctype/vehicle_document/vehicle_document.py").read_text(encoding="utf-8")
+          scheduler = Path("sotrama/tp/scheduler/documents.py").read_text(encoding="utf-8")
+          assert "_update_vehicle_document_statuses()" in vehicle_controller
+          assert "get_vehicle_document_status" in vehicle_document_controller
+          assert "refresh_vehicle_document_statuses()" in Path("sotrama/patches/v1_4/initial_data_cleanup.py").read_text(encoding="utf-8")
+          assert "Vehicle Document Row: {doc.name} | Expiry: {doc.expiry_date}" in scheduler
+          assert '"status", "Closed", update_modified=False' in scheduler
+          operational_task_js = Path("sotrama/public/js/operational_task.js").read_text(encoding="utf-8")
+          assert "search_workshop_employees" in operational_task_js
+          assert '"Operational Task": "public/js/operational_task.js"' in Path("sotrama/hooks.py").read_text(encoding="utf-8")
+
+          workshop_read_only = ("vehicle", "driver", "operational_task", "maintenance_schedule", "maintenance_job_type", "vehicle_make", "vehicle_model")
+          for doctype_name in workshop_read_only:
+              doctype_path = Path("sotrama/tp/doctype") / doctype_name / f"{doctype_name}.json"
+              doctype_data = json.loads(doctype_path.read_text(encoding="utf-8"))
+              workshop = next(row for row in doctype_data["permissions"] if row["role"] == "Workshop" and row.get("permlevel", 0) == 0)
+              assert workshop.get("read") == 1, doctype_name
+              for action in ("write", "create", "delete", "submit", "cancel", "amend"):
+                  assert not workshop.get(action, 0), f"Workshop unexpectedly has {action} on {doctype_name}"
+          for doctype_name in ("maintenance_job_card", "vehicle_inspection", "breakdown_incident"):
+              doctype_data = json.loads((Path("sotrama/tp/doctype") / doctype_name / f"{doctype_name}.json").read_text(encoding="utf-8"))
+              workshop = next(row for row in doctype_data["permissions"] if row["role"] == "Workshop" and row.get("permlevel", 0) == 0)
+              assert workshop.get("write") and workshop.get("create") and workshop.get("submit")
+              assert not workshop.get("cancel", 0), doctype_name
+          vehicle = json.loads(Path("sotrama/tp/doctype/vehicle/vehicle.json").read_text(encoding="utf-8"))
+          vehicle_fields = {field["fieldname"]: field for field in vehicle["fields"]}
+          for fieldname in ("acquisition_date", "acquisition_value", "current_value", "depreciation_rate", "salvage_value", "insurance_value", "asset"):
+              assert vehicle_fields[fieldname]["permlevel"] == 1
+          driver_fields = {field["fieldname"]: field for field in driver["fields"]}
+          assert driver_fields["employee"]["permlevel"] == 3
+          assert not driver_fields["employee"].get("in_list_view")
+          for fieldname in ("phone", "email", "license_class", "license_expiry", "total_incidents", "notes"):
+              assert driver_fields[fieldname]["permlevel"] == 2
+          for fieldname in ("address", "hire_date", "license_number", "license_issue_date"):
+              assert driver_fields[fieldname]["permlevel"] == 1
+          assert "personal number" in driver_fields["phone"].get("description", "")
+          assert "personal email" in driver_fields["email"].get("description", "")
+          for fieldname in ("medical_expiry", "safety_training_expiry", "professional_certificate", "professional_certificate_number", "compliance_records", "date_of_birth", "national_id"):
+              assert driver_fields[fieldname]["permlevel"] == 1
+          driver_permissions = driver["permissions"]
+          assert not any(row["role"] == "Fleet Manager" and row.get("permlevel") == 1 for row in driver_permissions)
+          assert any(row["role"] == "Fleet Manager" and row.get("permlevel") == 2 and row.get("read") and row.get("write") for row in driver_permissions)
+          assert not any(row["role"] == "Fleet Manager" and row.get("permlevel") == 3 for row in driver_permissions)
+          assert not any(row["role"] == "Workshop" and row.get("permlevel", 0) > 0 for row in driver_permissions)
+          for role in ("HR Manager", "System Manager"):
+              assert any(row["role"] == role and row.get("permlevel") == 1 and row.get("read") and row.get("write") for row in driver_permissions)
+              assert any(row["role"] == role and row.get("permlevel") == 2 and row.get("read") and row.get("write") for row in driver_permissions)
+              assert any(row["role"] == role and row.get("permlevel") == 3 and row.get("read") and row.get("write") for row in driver_permissions)
+          assert "_validate_supervisor" in inspection_controller
+          assert "Only an Active Driver can be assigned" in inspection_controller
+          assert "def before_cancel" in inspection_controller and "has_critical_defect" in inspection_controller
+          assert "_validate_system_managed_fields" in inspection_controller
+          task_controller = Path("sotrama/tp/doctype/operational_task/operational_task.py").read_text(encoding="utf-8")
+          assert "_validate_supervisor" in task_controller
+          assert 'getattr(self, "_action", None) == "submit"' in task_controller
+          vehicle_controller = Path("sotrama/tp/doctype/vehicle/vehicle.py").read_text(encoding="utf-8")
+          assert "_validate_safety_hold" in vehicle_controller
+          assert "_validate_company_ownership" in vehicle_controller
+          assert "get_open_vehicle_safety_holds" in vehicle_controller
+          assert 'getattr(self, "_action", None) == "submit"' in vehicle_controller
+          breakdown_controller = Path("sotrama/tp/doctype/breakdown_incident/breakdown_incident.py").read_text(encoding="utf-8")
+          assert '@frappe.whitelist(methods=["POST"])\ndef update_breakdown_status' in breakdown_controller
+          assert 'self.status not in ("Resolved", "Closed")' in breakdown_controller
+          assert "_validate_system_managed_fields" in breakdown_controller
+          assert "Resolution Notes are required" in breakdown_controller
+          assert "BREAKDOWN_STATUS_TRANSITIONS" in breakdown_controller
+          driver_controller = Path("sotrama/tp/doctype/driver/driver.py").read_text(encoding="utf-8")
+          assert '@frappe.whitelist(methods=["POST"])\ndef update_driver_status' in driver_controller
+          assert "DRIVER_STATUS_TRANSITIONS" in driver_controller
+          assert "_validate_company_ownership" in driver_controller
+          assert "License Number is required" not in driver_controller
+          driver_js = Path("sotrama/public/js/driver.js").read_text(encoding="utf-8")
+          assert "cell_number" not in driver_js and "personal_email" not in driver_js
+          assert "phone: message." not in driver_js
+          assert "values.email = message.company_email" in driver_js
+          schedule_controller = Path("sotrama/tp/doctype/maintenance_schedule/maintenance_schedule.py").read_text(encoding="utf-8")
+          assert '@frappe.whitelist(methods=["POST"])\ndef update_maintenance_schedule_status' in schedule_controller
+          assert "def before_cancel(self)" in schedule_controller
+          assert "MAINTENANCE_SCHEDULE_STATUS_TRANSITIONS" in schedule_controller
+          assert "Record the last service odometer before completing" in schedule_controller
+          validation_controller = Path("sotrama/tp/validation.py").read_text(encoding="utf-8")
+          assert "def get_open_vehicle_safety_holds" in validation_controller
+          assert "current driving licence number, category and expiry" in validation_controller
+          assert "def prevent_submitted_fleet_record_deletion" in validation_controller
+          tp_settings = json.loads(Path("sotrama/tp/doctype/tp_settings/tp_settings.json").read_text(encoding="utf-8"))
+          tp_setting_fields = {field["fieldname"]: field for field in tp_settings["fields"]}
+          assert tp_setting_fields["block_expired_driver_license"]["default"] == "0"
+          for fieldname in ("default_company", "default_company_classification", "default_department", "default_cost_center", "default_parts_warehouse", "company_defaults"):
+              assert tp_setting_fields[fieldname]["permlevel"] == 2
+          assert any(row["role"] == "System Manager" and row.get("permlevel") == 2 and row.get("read") and row.get("write") for row in tp_settings["permissions"])
+          for role in ("Fleet Manager", "HR Manager", "Workshop"):
+              assert not any(row["role"] == role and row.get("permlevel") == 2 for row in tp_settings["permissions"])
+          tp_settings_controller = Path("sotrama/tp/doctype/tp_settings/tp_settings.py").read_text(encoding="utf-8")
+          assert "_validate_company_defaults_permissions" in tp_settings_controller
+          tp_settings_api = Path("sotrama/tp/settings.py").read_text(encoding="utf-8")
+          assert "def get_tp_default_company" in tp_settings_api
+          assert "validate_company_access(company, applicable_for)" in tp_settings_api
+          permissions_source = Path("sotrama/permissions.py").read_text(encoding="utf-8")
+          hooks_source = Path("sotrama/hooks.py").read_text(encoding="utf-8")
+          assert "get_single_value_with_tp_settings_field_permissions" in permissions_source
+          assert "get_value_with_tp_settings_field_permissions" in permissions_source
+          assert "isinstance(filters, dict) or filters" in permissions_source
+          assert "validate_link_and_fetch_without_tp_settings_singleton" in permissions_source
+          assert "get_list_with_tp_settings_permissions" in permissions_source
+          assert "tp_company_defaults_query_conditions" in permissions_source
+          assert "tp_settings_query_conditions" in permissions_source
+          assert "prevent_unsafe_fleet_docsharing" in permissions_source
+          assert "remove_unsafe_fleet_docshares" in permissions_source
+          assert "SOTRAMA_CHILD_TABLE_DOCTYPES" in permissions_source
+          assert "sotrama_child_table_query_conditions" in permissions_source
+          assert "is_company_scoped_fleet_attachment" in permissions_source
+          assert "is_direct_company_scoped_fleet_attachment" in permissions_source
+          assert "prevent_fleet_attachment_content_reuse" in permissions_source
+          assert "_prevent_cross_company_file_reuse" in permissions_source
+          assert "_get_file_attachment_company" in permissions_source
+          assert "FLEET_FILE_PRIVACY_FIELD" in permissions_source
+          assert "_ensure_fleet_file_privacy_field" in permissions_source
+          assert "_filter_fleet_attachment_metadata" in permissions_source
+          install_source = Path("sotrama/setup/install.py").read_text(encoding="utf-8")
+          assert 'frappe.db.delete("Module Def", {"name": module_name})' in install_source
+          assert "secure_company_scoped_fleet_attachment" in permissions_source
+          assert "remove_unsafe_fleet_docshares_for_file" in permissions_source
+          assert "COMPANY_SCOPED_FLEET_DOCTYPES" in permissions_source
+          assert '"frappe.client.get_single_value": "sotrama.permissions.get_single_value_with_tp_settings_field_permissions"' in hooks_source
+          assert '"frappe.client.get_value": "sotrama.permissions.get_value_with_tp_settings_field_permissions"' in hooks_source
+          assert '"frappe.client.get_list": "sotrama.permissions.get_list_with_tp_settings_permissions"' in hooks_source
+          assert '"frappe.client.validate_link_and_fetch": "sotrama.permissions.validate_link_and_fetch_without_tp_settings_singleton"' in hooks_source
+          tp_settings_source = Path("sotrama/tp/settings.py").read_text(encoding="utf-8")
+          assert "_get_accessible_company_default" in tp_settings_source
+          assert 'frappe.has_permission(doctype, "read", doc=value)' in tp_settings_source
+          assert 'frappe.has_permission("Vehicle", "create", throw=True)' in tp_settings_source
+          assert 'frappe.has_permission(applicable_for, "create", throw=True)' in tp_settings_source
+          assert '"DocShare": {' in hooks_source
+          assert '"before_insert": "sotrama.permissions.prevent_unsafe_fleet_docsharing"' in hooks_source
+          assert '"before_save": "sotrama.permissions.prevent_unsafe_fleet_docsharing"' in hooks_source
+          assert '"Company Classification": {' in hooks_source
+          for path in (
+              "sotrama/tp/doctype/vehicle/vehicle.json",
+              "sotrama/tp/doctype/driver/driver.json",
+              "sotrama/tp/doctype/vehicle_inspection/vehicle_inspection.json",
+              "sotrama/tp/doctype/breakdown_incident/breakdown_incident.json",
+              "sotrama/tp/doctype/operational_task/operational_task.json",
+              "sotrama/tp/doctype/maintenance_schedule/maintenance_schedule.json",
+              "sotrama/tp/doctype/maintenance_job_card/maintenance_job_card.json",
+              "sotrama/tp/doctype/company_classification/company_classification.json",
+          ):
+              permissions = json.loads(Path(path).read_text(encoding="utf-8"))["permissions"]
+              system_manager = next(
+                  row for row in permissions
+                  if row["role"] == "System Manager" and row.get("permlevel", 0) == 0
+              )
+              assert system_manager.get("share") == 1, path
+              assert all(
+                  row["role"] == "System Manager"
+                  for row in permissions
+                  if row.get("share")
+              ), path
+              for role in ("Fleet Manager", "Workshop", "HRMS Employee"):
+                  assert not any(row["role"] == role and row.get("share") for row in permissions), path
+          tp_settings_permissions = json.loads(
+              Path("sotrama/tp/doctype/tp_settings/tp_settings.json").read_text(encoding="utf-8")
+          )["permissions"]
+          assert not any(row.get("share") for row in tp_settings_permissions)
+          assert "ignore_share_permissions=True" in permissions_source
+          assert 'doc.get("everyone")' in permissions_source
+          scheduler_paths = [
+              Path("sotrama/tp/scheduler/common.py"),
+              Path("sotrama/tp/scheduler/documents.py"),
+              Path("sotrama/tp/scheduler/maintenance.py"),
+              Path("sotrama/tp/scheduler/drivers.py"),
+          ]
+          scheduler_source = "\n".join(path.read_text(encoding="utf-8") for path in scheduler_paths)
+          assert "def _user_for_role(" in scheduler_source
+          assert "role_users_cache=None" in scheduler_source
+          assert "known_existing=False" in scheduler_source
+          scheduler_tree = ast.parse(scheduler_source)
+          scheduler_role_scopes = {
+              (call.args[0].value, call.args[1].value)
+              for call in ast.walk(scheduler_tree)
+              if isinstance(call, ast.Call)
+              and isinstance(call.func, ast.Name)
+              and call.func.id == "_user_for_role"
+              and len(call.args) >= 2
+              and isinstance(call.args[0], ast.Constant)
+              and isinstance(call.args[1], ast.Constant)
+          }
+          assert {
+              ("Fleet Manager", "Vehicle"),
+              ("Fleet Manager", "Maintenance Schedule"),
+              ("Fleet Manager", "Driver"),
+              ("HR Manager", "Driver"),
+          } <= scheduler_role_scopes
+          assert 'fields=["name", "driver_name", "license_expiry", "safety_training_expiry"]' in scheduler_source
+          assert "(License: {1})" not in scheduler_source
+          assert '"Driver {0} safety training expires on {1}."' in scheduler_source
+          test_source = "\n".join(
+              path.read_text(encoding="utf-8")
+              for path in Path("sotrama/tests").glob("test_*.py")
+          )
+          assert "test_single_value_and_value_endpoints_enforce_tp_settings_permlevels" in test_source
+          assert "test_driver_alerts_do_not_disclose_licence_number_or_safety_expiry_to_fleet" in test_source
+          assert "test_maintenance_job_card_breakdown_links_are_workflow_managed_and_company_scoped" in test_source
+          assert "validate_linked_document_read_permission" in Path("sotrama/tp/validation.py").read_text(encoding="utf-8")
+          job_card_controller = Path("sotrama/tp/doctype/maintenance_job_card/maintenance_job_card.py").read_text(encoding="utf-8")
+          assert 'validate_linked_document_read_permission(' in job_card_controller
+          assert '"Breakdown Incident", incident_name' in job_card_controller
+          assert 'validate_company_access(driver.company, "Driver")' in Path("sotrama/tp/validation.py").read_text(encoding="utf-8")
+          assert 'validate_company_access(driver.company, "Employee")' in Path("sotrama/tp/validation.py").read_text(encoding="utf-8")
+          assert 'validate_company_access(vehicle_company, "Vehicle")' in Path("sotrama/tp/doctype/vehicle_inspection/vehicle_inspection.py").read_text(encoding="utf-8")
+          assert 'validate_company_access(project_company, "Project")' in Path("sotrama/tp/doctype/operational_task/operational_task.py").read_text(encoding="utf-8")
+          for path in (
+              "sotrama/tp/doctype/vehicle/vehicle.py",
+              "sotrama/tp/doctype/vehicle_inspection/vehicle_inspection.py",
+              "sotrama/tp/doctype/breakdown_incident/breakdown_incident.py",
+              "sotrama/tp/doctype/operational_task/operational_task.py",
+              "sotrama/tp/doctype/maintenance_schedule/maintenance_schedule.py",
+              "sotrama/tp/doctype/maintenance_job_card/maintenance_job_card.py",
+          ):
+              assert "validate_linked_document_read_permission" in Path(path).read_text(encoding="utf-8"), path
+          employee_lookup = Path("sotrama/tp/doctype/maintenance_job_card/maintenance_job_card.py").read_text(encoding="utf-8")
+          assert 'validate_company_access(company, "Employee")' in employee_lookup
+          assert 'validate_company_access(company, "Vehicle")' in employee_lookup
+          assert 'target_doctype = filters.get("target_doctype")' in employee_lookup
+          assert '_validate_workshop_employee_lookup_access(' in employee_lookup
+          assert 'self.company, "Maintenance Job Card"' in employee_lookup
+          assert "test_company_setting_lookup_checks_context_and_only_uses_primary_fallback" in test_source
+          assert "test_primary_company_api_returns_only_for_supported_create_contexts" in test_source
+          assert "test_company_default_projection_rejects_wrong_missing_or_unscoped_targets" in test_source
+          assert "test_linked_document_access_checks_the_exact_target_record" in test_source
+          assert "test_active_driver_projection_checks_employee_company_scope" in test_source
+          assert "test_automatic_schedule_lookup_uses_read_permission_and_company_scope" in test_source
+          assert "test_automatic_schedule_lookup_rejects_other_company" in test_source
+          assert "test_transport_submission_waits_for_regulatory_confirmation" in test_source
+          assert "test_own_account_transport_requires_authority_evidence_before_regulated_submission" in test_source
+          assert "test_nonregulated_transport_requires_official_authority_evidence" in test_source
+          assert "test_authority_evidence_must_be_a_local_file_attached_to_the_task_field" in test_source
+          assert "test_legacy_company_nif_guarded_update_does_not_overwrite_concurrent_tax_id" in test_source
+          assert "test_legacy_company_nif_is_hidden_only_after_conflict_free_owned_migration" in test_source
+          company_migration = Path("sotrama/migrations/company.py").read_text(encoding="utf-8")
+          assert "TRIM(COALESCE(`tax_id`, '')) = ''" in company_migration
+          assert "hide_managed_legacy_company_nif" in company_migration
+          operational_task_source = Path("sotrama/tp/doctype/operational_task/operational_task.py").read_text(encoding="utf-8")
+          operational_task_fields = json.loads(Path("sotrama/tp/doctype/operational_task/operational_task.json").read_text(encoding="utf-8"))["fields"]
+          assert "_validate_transport_regulatory_applicability" in operational_task_source
+          assert "_validate_transport_authority_evidence" in operational_task_source
+          for fieldname in (
+              "transport_basis",
+              "transport_regulatory_status",
+              "transport_authority_reference",
+              "transport_authority_decision_date",
+              "transport_authority_evidence",
+          ):
+              assert any(field.get("fieldname") == fieldname for field in operational_task_fields), fieldname
+          assert "target_doctype: 'Vehicle Inspection'" in Path("sotrama/public/js/inspection.js").read_text(encoding="utf-8")
+          assert "target_doctype: 'Operational Task'" in Path("sotrama/public/js/operational_task.js").read_text(encoding="utf-8")
+          assert job_card_fields["linked_breakdown"]["hidden"] and job_card_fields["linked_breakdown"]["read_only"]
+          assert job_card_fields["linked_breakdown_incident"]["read_only"]
+          assert "_validate_breakdown_links" in job_card_controller
+          assert 'frappe.flags.get("in_breakdown_job_card_creation")' in job_card_controller
+          breakdown_controller = Path("sotrama/tp/doctype/breakdown_incident/breakdown_incident.py").read_text(encoding="utf-8")
+          assert "frappe.flags.in_breakdown_job_card_creation = True" in breakdown_controller
+          schedule_controller = Path("sotrama/tp/doctype/maintenance_schedule/maintenance_schedule.py").read_text(encoding="utf-8")
+          assert 'frappe.flags.get("in_maintenance_schedule_generation")' in schedule_controller
+          assert "frappe.flags.in_maintenance_schedule_generation = True" in schedule_controller
+          assert '"on_trash": "sotrama.tp.validation.prevent_submitted_fleet_record_deletion"' in hooks_source
+          assert '"File": "sotrama.permissions.file_has_permission"' in hooks_source
+          assert '"File": "sotrama.permissions.file_query_conditions"' in hooks_source
+          assert '"Driver Compliance Record": "sotrama.permissions.driver_compliance_record_query_conditions"' in hooks_source
+          for child_doctype in (
+              "Breakdown Photo",
+              "Inspection Item",
+              "Job Card Labour",
+              "Job Card Other Cost",
+              "Job Card Part",
+              "Job Card Photo",
+              "Vehicle Document",
+          ):
+              assert f'"{child_doctype}": "sotrama.permissions.sotrama_child_table_query_conditions"' in hooks_source
+          assert '"File": "sotrama.overrides.file.DriverPrivateFileMixin"' in hooks_source
+          file_override = Path("sotrama/overrides/file.py").read_text(encoding="utf-8")
+          assert "def before_insert(self)" in file_override
+          assert "def after_insert(self)" in file_override
+          assert 'base_after_insert = getattr(super(), "after_insert", None)' in file_override
+          assert "def on_update(self)" in file_override
+          assert "FLEET_FILE_PRIVACY_FIELD" in file_override
+          assert "secure_duplicate_fleet_file_rows" in file_override
+          assert "self.is_private = 1" in file_override
+          assert "result = super().before_insert()" in file_override
+          assert '"frappe.desk.form.load.getdoc": "sotrama.permissions.getdoc_with_driver_attachment_filter"' in hooks_source
+          assert '"frappe.desk.form.load.get_docinfo": "sotrama.permissions.get_docinfo_with_driver_attachment_filter"' in hooks_source
+          assert '"frappe.desk.form.load.get_filtered_attachments": "sotrama.permissions.get_filtered_attachments_with_driver_attachment_filter"' in hooks_source
+          assert '"sotrama.permissions.secure_driver_private_attachment"' in hooks_source
+          assert '"sotrama.permissions.secure_company_scoped_fleet_attachment"' in hooks_source
+          assert '"before_validate": "sotrama.permissions.secure_company_scoped_fleet_attachment"' in hooks_source
+          assert '"before_insert": "sotrama.permissions.secure_driver_private_attachment"' in hooks_source
+          assert '"before_save": "sotrama.permissions.secure_driver_private_attachment"' in hooks_source
+          assert '"sotrama.permissions.remove_unsafe_fleet_docshares_for_file"' in hooks_source
+          assert '"after_insert": "sotrama.permissions.secure_driver_private_attachment"' in hooks_source
+          assert 'after_migrate = "sotrama.setup.install.recover_incomplete_install"' in hooks_source
+          assert "def run_after_migrate" not in hooks_source
+          app_company_migrations = Path("sotrama/migrations/company.py").read_text(encoding="utf-8")
+          assert "def migrate_legacy_company_nif" in app_company_migrations
+          assert "_is_managed_company_field(legacy_field)" in app_company_migrations
+          assert "if not standard_nif:" in app_company_migrations
+          app_patch = Path("sotrama/patches/v1_4/initial_data_cleanup.py").read_text(encoding="utf-8")
+          security_migrations = Path("sotrama/migrations/security.py").read_text(encoding="utf-8")
+          assert 'file_doc = frappe.get_doc("File", row.name)' in security_migrations
+          assert 'file_doc.save(ignore_permissions=True)' in security_migrations
+          assert 'file_doc.handle_is_private_changed()' in security_migrations
+          assert "prevent_fleet_attachment_content_reuse(file_doc)" in security_migrations
+          assert 'frappe.db.set_value("File", file_name, "is_private", 1)' not in security_migrations
+          assert 'title="Remote Fleet attachment detached"' in security_migrations
+          assert 'title="Duplicate Fleet attachment detached"' in permissions_source
+          assert "secure_duplicate_fleet_file_rows(file_doc)" in security_migrations
+          assert "_ensure_fleet_file_privacy_field()" in security_migrations
+          assert "never_skip_patches" in hooks_source
+          assert "post_model_sync" in Path("sotrama/patches.txt").read_text(encoding="utf-8")
+          assert "migrate_driver_private_attachments()" in app_patch
+          assert "remediate_fleet_alert_todo_assignments()" in app_patch
+          app_uninstall = Path("sotrama/setup/uninstall.py").read_text(encoding="utf-8")
+          assert "preserve_driver_file_privacy_on_uninstall" in app_uninstall
+          assert "preserve_fleet_file_privacy_on_uninstall" in app_uninstall
+          app_permissions = Path("sotrama/permissions.py").read_text(encoding="utf-8")
+          assert "def file_has_permission" in app_permissions
+          assert "def file_query_conditions" in app_permissions
+          assert "def can_access_driver_private_attachment" in app_permissions
+          assert "def can_access_company_scoped_fleet_attachment" in app_permissions
+          assert "def _prevent_cross_company_file_reuse" in app_permissions
+          assert "def _get_file_attachment_company" in app_permissions
+          assert "def _can_read_driver_attachment_parent" in app_permissions
+          assert "def _secure_duplicate_driver_file_rows" in app_permissions
+          assert "def secure_duplicate_fleet_file_rows" in app_permissions
+          assert "def _require_driver_private_file_write_access" in app_permissions
+          assert "def _validate_driver_private_file_paths" in app_permissions
+          assert "def _clear_attached_file_field" in app_permissions
+          assert "def _remove_private_driver_file_shares" in app_permissions
+          assert "def driver_compliance_record_query_conditions" in app_permissions
+          assert "def remove_unsafe_fleet_docshares" in app_permissions
+          assert "def enforce_fleet_company_user_permissions" in app_permissions
+          assert "def remove_unsafe_fleet_docshares_for_user" in app_permissions
+          assert "def remove_unsafe_fleet_docshares_for_document" in app_permissions
+          assert "Driver compliance attachments cannot be shared directly." in app_permissions
+          for doctype in (
+              "Vehicle",
+              "Driver",
+              "Vehicle Inspection",
+              "Breakdown Incident",
+              "Operational Task",
+              "Maintenance Schedule",
+              "Maintenance Job Card",
+              "Company Classification",
+          ):
+              assert f'"{doctype}": "sotrama.permissions.enforce_fleet_company_user_permissions"' in hooks_source
+              assert f'"{doctype}": {{' in hooks_source
+          assert '"User Permission": {' in hooks_source and '"after_insert": "sotrama.permissions.remove_unsafe_fleet_docshares_for_user"' in hooks_source
+          assert '"after_delete": "sotrama.permissions.remove_unsafe_fleet_docshares_for_user"' in hooks_source
+          assert '"on_update": "sotrama.permissions.remove_unsafe_fleet_docshares_for_user"' in hooks_source
+          assert '"Has Role": {' in hooks_source
+          assert '"on_update_after_submit": "sotrama.permissions.remove_unsafe_fleet_docshares_for_document"' in hooks_source
+          assert '"after_delete": "sotrama.permissions.remove_unsafe_fleet_docshares_for_document"' in hooks_source
+          assert '"File": "sotrama.permissions.file_has_permission"' in hooks_source
+          assert '"owner"' in app_permissions
+          assert "frappe.get_roles(share_owner)" in app_permissions
+          assert "getdoc_with_driver_attachment_filter" in app_permissions
+          assert "get_docinfo_with_driver_attachment_filter" in app_permissions
+          assert "get_filtered_attachments_with_driver_attachment_filter" in app_permissions
+          assert "def secure_driver_private_attachment" in app_permissions
+          app_security_migrations = Path("sotrama/migrations/security.py").read_text(encoding="utf-8")
+          assert "def migrate_driver_private_attachments" in app_security_migrations
+          assert "def remediate_fleet_alert_todo_assignments" in app_security_migrations
+          assert "def preserve_driver_file_privacy_on_uninstall" in app_permissions
+          assert "def preserve_fleet_file_privacy_on_uninstall" in app_permissions
+          assert "sotrama_private_driver_attachment" in app_permissions
+          assert "Private Driver compliance attachment" in app_permissions
+          file_override = Path("sotrama/overrides/file.py").read_text(encoding="utf-8")
+          assert "class DriverPrivateFileMixin" in file_override and "def is_downloadable" in file_override
+          assert "can_access_driver_private_attachment" in file_override
+          assert "can_access_company_scoped_fleet_attachment" in file_override
+          assert "_validate_other_costs" in job_card_controller
+          tp_settings_controller = Path("sotrama/tp/settings.py").read_text(encoding="utf-8")
+          assert "def validate_company_access" in tp_settings_controller
+          assert "get_user_permissions(user)" in tp_settings_controller
+          assert "get_allowed_docs_for_doctype" in tp_settings_controller
+          assert 'frappe.get_list("Company"' not in tp_settings_controller
+          assert "test_workshop_permissions_follow_least_privilege" in test_source
+          assert "test_inspection_server_restores_every_required_standard_check" in test_source
+          assert "test_vehicle_cannot_return_to_service_with_an_open_safety_hold" in test_source
+          assert "test_submitted_vehicle_and_driver_company_ownership_is_immutable" in test_source
+          assert "test_critical_inspection_cannot_be_cancelled" in test_source
+          assert "test_unresolved_breakdown_cannot_be_cancelled" in test_source
+          assert "test_inspection_workflow_fields_cannot_be_forged_after_submission" in test_source
+          assert "test_regulated_transport_requires_current_driver_licence_data" in test_source
+          assert "test_regulated_transport_always_requires_a_current_licence_when_optional_compliance_policy_is_disabled" in test_source
+          assert "test_regulated_transport_requires_current_certificate_and_screening_when_policy_is_enabled" in test_source
+          assert "test_off_road_operator_can_be_recorded_without_road_licence" in test_source
+          assert "test_breakdown_previous_vehicle_status_cannot_be_forged" in test_source
+          assert "test_submitted_fleet_status_transitions_are_enforced_server_side" in test_source
+          assert "test_breakdown_resolution_requires_audit_notes" in test_source
+          assert "test_completed_mileage_schedule_requires_last_service_odometer" in test_source
+          assert "test_submitted_fleet_records_are_preserved_for_audit" in test_source
+          assert "test_driver_hr_attachments_are_private_to_hr_roles" in test_source
+          assert "legacy-public-certificate.pdf" in test_source
+          assert "test_linking_employee_does_not_copy_personal_contact_details_to_fleet_fields" in test_source
+          assert "test_driver_compliance_child_attachments_are_hr_only" in test_source
+          assert "test_driver_file_download_mixin_denies_non_hr_even_for_public_files" in test_source
+          assert "test_driver_attachment_access_checks_parent_company_permission" in test_source
+          assert "test_duplicate_file_rows_sharing_driver_content_hash_remain_hr_only" in test_source
+          assert "test_private_file_migration_fails_closed_on_path_collision" in test_source
+          assert "test_migration_repairs_private_flag_with_public_file_url" in test_source
+          assert "test_duplicate_driver_evidence_is_hidden_from_unrelated_attachment_views" in test_source
+          assert "test_uninstall_detaches_non_driver_file_rows_sharing_private_driver_content" in test_source
+          assert "test_driver_compliance_child_table_is_scoped_to_hr_parent_access" in test_source
+          assert "test_existing_driver_employee_projection_is_company_filtered" in test_source
+          assert "test_docshare_allows_only_system_manager_with_recipient_company_scope" in test_source
+          assert "test_fleet_docshare_cannot_override_company_user_permissions" in test_source
+          assert "test_share_cleanup_runs_after_user_permission_and_fleet_company_changes" in test_source
+          assert "test_deleted_fleet_record_cannot_leave_a_stale_docshare" in test_source
+          assert "test_role_demotion_removes_shares_owned_by_former_system_manager" in test_source
+          assert "test_share_cleanup_preserves_original_owner_filter_for_file_shares" in test_source
+          assert "test_child_tables_are_only_queryable_through_parent_forms" in test_source
+          assert "test_generic_child_table_rpc_wrappers_reject_company_scoped_rows" in test_source
+          assert "test_fleet_and_driver_file_shares_are_rejected" in test_source
+          assert "test_legacy_fleet_file_shares_are_removed_during_migration_cleanup" in test_source
+          assert "test_file_updates_remove_shares_when_attached_to_or_detached_from_fleet" in test_source
+          assert "test_company_scoped_fleet_attachments_are_always_private" in test_source
+          assert "test_fleet_file_download_checks_parent_scope_before_owner_shortcut" in test_source
+          assert "test_fleet_attachment_migration_makes_existing_files_private" in test_source
+          assert "test_fleet_attachment_migration_validates_already_private_content_groups" in test_source
+          assert "test_fleet_attachment_migration_repairs_public_url_with_private_flag" in test_source
+          assert "test_fleet_attachment_migration_detaches_remote_urls" in test_source
+          assert "test_file_controller_mixin_sets_privacy_before_storage_insert" in test_source
+          assert "test_file_controller_mixin_blocks_reuse_of_fleet_file_content" in test_source
+          assert "test_duplicate_fleet_file_rows_do_not_create_an_unrelated_access_path" in test_source
+          assert "test_file_query_conditions_hide_detached_fleet_provenance_rows" in test_source
+          assert "test_fleet_file_owner_must_still_have_parent_company_permission" in test_source
+          assert "test_child_fleet_file_ignores_parent_docshare_without_bypassing_permlevel" in test_source
+          assert "test_driver_and_general_fleet_attachment_content_cannot_cross_privacy_scopes" in test_source
+          assert "test_private_file_content_cannot_be_reused_across_companies_through_child_rows" in test_source
+          assert "test_fleet_attachment_moves_require_old_parent_and_same_company" in test_source
+          assert "test_detached_fleet_protected_file_cannot_be_reattached_by_regular_user" in test_source
+          assert "test_fleet_attachment_docinfo_hides_unrelated_duplicate_rows" in test_source
+          assert "test_fleet_attachment_migration_detaches_unrelated_duplicate_file_rows" in test_source
+          assert "test_before_install_ensures_driver_and_fleet_attachment_privacy_metadata" in test_source
+          assert "test_before_install_refuses_to_claim_an_unowned_fleet_file_privacy_field" in test_source
+          assert "test_before_install_repairs_only_unplaced_sotrama_modules" in test_source
+          assert "test_before_install_removes_existing_sotrama_module_for_installer_recreation" in test_source
+          assert "test_before_install_removes_sotrama_module_with_null_custom_flag_for_recreation" in test_source
+          assert "test_before_install_does_not_claim_another_apps_module" in test_source
+          assert "test_before_install_leaves_custom_module_definitions_for_frappe" in test_source
+          assert "test_uninstall_detaches_fleet_files_and_preserves_private_storage" in test_source
+          assert "test_company_scoped_fleet_attachments_reject_remote_urls" in test_source
+          assert "unauthorized-share" in test_source
+          assert "test_workshop_cannot_hide_custom_checks_in_noncritical_categories" in test_source
+          assert "test_job_card_rejects_disabled_stock_items_server_side" in test_source
+          assert "row.mechanic_name = None" in job_card_controller
+          assert "test_driver_private_attachment_migration_converts_local_files" in test_source
+          assert "test_driver_private_files_are_detached_and_administrator_owned_on_uninstall" in test_source
+          assert "class TestDriverFileMetadataPrivacy" in test_source
+          assert "test_driver_form_and_docinfo_responses_hide_attachment_metadata_from_fleet" in test_source
+          assert "test_separate_driver_docinfo_endpoint_checks_parent_read_permission" in test_source
+          assert "test_driver_attachment_gallery_returns_no_hr_files_to_workshop" in test_source
+          assert "test_dock_workspace_entries_are_gated_by_workspace_permissions" in test_source
+          assert "test_tp_sidebar_and_parent_workspace_links_are_filtered_by_frappe_permissions" in test_source
+          assert "test_validate_company_access_uses_user_permissions_without_company_read_permission" in test_source
+          assert "test_company_link_is_required_on_all_company_scoped_fleet_records" in test_source
+          assert "test_legacy_company_nif_migration_preserves_conflicts_and_existing_tax_id" in test_source
+          assert "test_legacy_company_nif_migration_does_not_claim_unowned_custom_field" in test_source
+          assert "test_initial_cleanup_patch_runs_security_migrations_before_optional_company_nif" in test_source
+          assert "test_initial_cleanup_patch_fails_closed_before_optional_company_nif" in test_source
+          company_controller_scopes = {
+              "sotrama/tp/doctype/vehicle/vehicle.py": "Vehicle",
+              "sotrama/tp/doctype/driver/driver.py": "Driver",
+              "sotrama/tp/doctype/operational_task/operational_task.py": "Operational Task",
+              "sotrama/tp/doctype/maintenance_job_card/maintenance_job_card.py": "Maintenance Job Card",
+              "sotrama/tp/doctype/vehicle_inspection/vehicle_inspection.py": "Vehicle Inspection",
+              "sotrama/tp/doctype/breakdown_incident/breakdown_incident.py": "Breakdown Incident",
+              "sotrama/tp/doctype/maintenance_schedule/maintenance_schedule.py": "Maintenance Schedule",
+              "sotrama/tp/doctype/company_classification/company_classification.py": "Company Classification",
+          }
+          for controller, applicable_for in company_controller_scopes.items():
+              assert f'validate_company_access(self.company, "{applicable_for}")' in Path(controller).read_text(encoding="utf-8")
+          assert 'validate_company_access(company, "Vehicle")' in tp_settings_controller
+          company_scoped_doctypes = (
+              "vehicle",
+              "driver",
+              "operational_task",
+              "maintenance_job_card",
+              "vehicle_inspection",
+              "breakdown_incident",
+              "maintenance_schedule",
+              "company_classification",
+          )
+          for doctype_name in company_scoped_doctypes:
+              doctype_json = json.loads((Path("sotrama/tp/doctype") / doctype_name / f"{doctype_name}.json").read_text(encoding="utf-8"))
+              company_field = next(field for field in doctype_json["fields"] if field["fieldname"] == "company")
+              assert company_field.get("reqd") == 1, doctype_name
+          assert "test_document_expiry_report_scopes_child_rows_to_permission_visible_vehicles" in test_source
+          assert "test_fleet_cost_report_scopes_aggregates_to_permission_visible_vehicles" in test_source
+          assert "class TestFleetSystemManagedFields" in test_source
+          assert "test_driver_incident_count_cannot_be_set_or_changed_by_users" in test_source
+          assert "test_breakdown_status_and_job_card_link_are_server_managed" in test_source
+          assert "test_inspection_issue_link_and_clearance_reference_are_server_managed" in test_source
+          assert "test_maintenance_schedule_cannot_forge_next_schedule_or_start_paused" in test_source
+          assert "test_completed_schedule_cannot_be_cancelled_while_successor_is_active" in test_source
+          assert "test_maintenance_job_card_cannot_forge_stock_or_schedule_links" in test_source
+          assert "test_vehicle_revalidates_primary_driver_on_every_draft_save_and_submit" in test_source
+          assert "test_operational_task_revalidates_driver_on_submit" in test_source
+          assert "test_vehicle_model_ids_do_not_collide_on_hyphenated_make_and_model_names" in test_source
+          assert "test_fleet_master_name_migration_keeps_duplicate_make_records_distinct" in test_source
+          assert "test_vehicle_rejects_invalid_acquisition_and_depreciation_values" in test_source
+          assert "test_legacy_invalid_asset_values_do_not_block_unrelated_vehicle_edits" in test_source
+          assert "test_fleet_cost_report_does_not_depreciate_beyond_salvage_value" in test_source
+          assert "test_fleet_cost_report_caps_period_depreciation_at_remaining_basis" in test_source
+
+          sotrama_sidebar = json.loads(Path("sotrama/sotrama/sidebar/sotrama/sotrama.json").read_text(encoding="utf-8"))
+          assert sotrama_sidebar["name"] == "Sotrama"
+          assert sotrama_sidebar["module"] == "Sotrama"
+          dock = json.loads(Path("sotrama/dock/sotrama/sotrama.json").read_text(encoding="utf-8"))
+          dock_targets = {(item["link_type"], item["link_to"]) for item in dock["items"]}
+          assert dock_targets == {
+              ("Workspace", "Sotrama"),
+              ("Workspace", "Sotrama Fleet"),
+          }
+          fleet_workspace = json.loads(Path("sotrama/tp/workspace/sotrama_fleet/sotrama_fleet.json").read_text(encoding="utf-8"))
+          assert "HR Manager" not in {row["role"] for row in fleet_workspace["roles"]}
+          assert "Fleet Cost Analysis" not in {row.get("link_to") for row in fleet_workspace["links"]}
+          expiry_report = json.loads(Path("sotrama/tp/report/upcoming_document_expiries/upcoming_document_expiries.json").read_text(encoding="utf-8"))
+          assert "Workshop" in {row["role"] for row in expiry_report["roles"]}
+          manager_workspace = json.loads(Path("sotrama/tp/workspace/fleet_management_reports/fleet_management_reports.json").read_text(encoding="utf-8"))
+          assert {row["role"] for row in manager_workspace["roles"]} == {"Fleet Manager", "System Manager"}
+          assert "Fleet Cost Analysis" in {row.get("link_to") for row in manager_workspace["links"]}
+          assert {block.get("data", {}).get("card_name") for block in json.loads(manager_workspace["content"]) if block.get("type") == "card"} == {"Fleet Analysis"}
+          assert "Company Classification" not in {row.get("link_to") for row in manager_workspace["links"]}
+          tp_sidebar = json.loads(Path("sotrama/tp/sidebar/tp/tp.json").read_text(encoding="utf-8"))
+          assert "Fleet Cost Analysis" not in {row.get("link_to") for row in tp_sidebar["items"]}
+          assert "Upcoming Document Expiries" not in {row.get("link_to") for row in tp_sidebar["items"]}
+          assert "Company Classification" not in {row.get("link_to") for row in tp_sidebar["items"]}
+          assert "TP Settings" not in {row.get("link_to") for row in tp_sidebar["items"]}
+          assert any(
+              row.get("link_type") == "Workspace" and row.get("link_to") == "Fleet Management Reports"
+              for row in tp_sidebar["items"]
+          )
+          parent_workspace = json.loads(Path("sotrama/sotrama/workspace/sotrama/sotrama.json").read_text(encoding="utf-8"))
+          parent_links = [row for row in parent_workspace["links"] if row.get("type") == "Link"]
+          assert {row.get("link_to") for row in parent_links} == {
+              "Company", "Designation", "Sotrama Settings", "TP Settings"
+          }
+          assert all(row.get("link_type") in {"DocType", "Page", "Report"} for row in parent_links)
+          assert not any(row.get("link_to") == "Algerian Localization" for row in parent_links)
+          assert "TP Settings" not in {row.get("link_to") for row in fleet_workspace["links"]}
+          fleet_blocks = json.loads(fleet_workspace["content"])
+          assert {block.get("data", {}).get("card_name") for block in fleet_blocks if block.get("type") == "card"} == {
+              "Fleet Operations", "Maintenance & Safety", "Reports & Analysis", "Setup & Masters"
+          }
+
+          app_path = Path("sotrama")
+          assert not Path("package.json").exists(), "Sotrama must not trigger Bench's automatic Yarn install"
+          assert (app_path / "sotrama" / "doctype" / "sotrama_settings" / "sotrama_settings.json").is_file()
+          for line in (app_path / "patches.txt").read_text(encoding="utf-8").splitlines():
+              patch = line.strip()
+              if patch and not patch.startswith(("#", "[")):
+                  module = app_path.joinpath(*patch.split(".")[1:]).with_suffix(".py")
+                  assert module.is_file(), f"Patch module does not exist: {patch}"
+          PY
+
+      - name: Build wheel
+        run: python -m build --wheel --no-isolation
+
+      - name: Verify wheel metadata and app files
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          wheels = list(Path("dist").glob("sotrama-*.whl"))
+          assert len(wheels) == 1, f"Expected one Sotrama wheel, found {wheels}"
+          with ZipFile(wheels[0]) as wheel:
+              names = set(wheel.namelist())
+              assert "sotrama/hooks.py" in names
+              assert "sotrama/sotrama/doctype/sotrama_settings/sotrama_settings.json" in names
+              assert "sotrama/sotrama/sidebar/sotrama/sotrama.json" in names
+              assert "sotrama/setup/masters.py" in names
+              assert "sotrama/designations.py" in names
+              assert "sotrama/public/js/sotrama_settings.js" in names
+              assert "sotrama/public/js/job_card.js" in names
+              assert "sotrama/public/js/inspection.js" in names
+              assert "sotrama/public/js/driver.js" in names
+              assert "sotrama/public/js/vehicle.js" in names
+              assert "sotrama/public/js/breakdown.js" in names
+              assert "sotrama/public/js/maintenance_schedule.js" in names
+              assert "sotrama/public/js/company_classification.js" in names
+              assert "sotrama/public/js/vehicle_model.js" in names
+              assert "sotrama/public/js/tp_settings.js" in names
+              assert "sotrama/public/js/operational_task.js" in names
+              assert "sotrama/patches/v1_4/initial_data_cleanup.py" in names
+              assert "sotrama/setup/install.py" in names
+              assert "sotrama/setup/uninstall.py" in names
+              assert "sotrama/setup/company.py" in names
+              assert "sotrama/migrations/fleet_documents.py" in names
+              assert "sotrama/migrations/fleet_reference_masters.py" in names
+              assert "sotrama/migrations/fleet_master_names.py" in names
+              assert "sotrama/migrations/security.py" in names
+              assert "sotrama/tp/scheduler/common.py" in names
+              assert "sotrama/tp/scheduler/documents.py" in names
+              assert "sotrama/tp/scheduler/maintenance.py" in names
+              assert "sotrama/tp/scheduler/drivers.py" in names
+              assert "sotrama/tp/doctype/vehicle_document/vehicle_document.py" in names
+              assert "sotrama/tp/doctype/vehicle_model/vehicle_model.py" in names
+              assert "sotrama/tp/doctype/vehicle_model/vehicle_model.json" in names
+              assert "sotrama/overrides/file.py" in names
+              assert "sotrama/locale/fr.po" in names
+              assert "sotrama/sotrama/workspace/sotrama/sotrama.json" in names
+              assert "sotrama/tp/workspace/fleet_management_reports/fleet_management_reports.json" in names
+              assert "sotrama/migrations/navigation.py" in names
+              assert not any("algerian_localization/workspace/" in name for name in names)
+              assert not any("algerian_localization/sidebar/" in name for name in names)
+              assert "sotrama/tp/settings.py" in names
+              assert "sotrama/tp/report/fleet_cost_analysis/fleet_cost_analysis.js" in names
+              assert "sotrama/tp/report/upcoming_document_expiries/upcoming_document_expiries.js" in names
+              assert not any(name.endswith("/package.json") for name in names)
+          print(f"Verified {wheels[0]}")
+          PY
+
+  frappe-integration:
+    name: Frappe 16.61.0 / ERPNext 16.61.0 / HRMS 16.60.0
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      mariadb:
+        image: mariadb:11.8
+        env:
+          MARIADB_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s
+          --health-timeout=2s
+          --health-retries=10
+      redis-cache:
+        image: redis:8-alpine
+        ports:
+          - 13000:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=2s
+          --health-retries=10
+      redis-queue:
+        image: redis:8-alpine
+        ports:
+          - 11000:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=2s
+          --health-retries=10
+      redis-socketio:
+        image: redis:8-alpine
+        ports:
+          - 12000:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=2s
+          --health-retries=10
+    steps:
+      - name: Check out Sotrama
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install system and Bench dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libffi-dev libjpeg-dev libmariadb-dev libssl-dev mariadb-client pkg-config zlib1g-dev
+          python -m pip install --upgrade pip frappe-bench
+          npm install --global yarn@1.22.22
+
+      - name: Initialize Bench with Frappe 16.61.0
+        run: |
+          bench init --skip-redis-config-generation --skip-assets --frappe-branch v16.61.0 --python "$(which python)" ~/frappe-bench
+          mariadb --host 127.0.0.1 --port 3306 -u root -proot -e "SET GLOBAL character_set_server = 'utf8mb4'"
+          mariadb --host 127.0.0.1 --port 3306 -u root -proot -e "SET GLOBAL collation_server = 'utf8mb4_unicode_ci'"
+
+      - name: Install ERPNext, HRMS, and Sotrama
+        working-directory: /home/runner/frappe-bench
+        run: |
+          bench get-app --skip-assets --branch v16.61.0 erpnext
+          bench get-app --skip-assets --branch v16.60.0 hrms
+          bench get-app --skip-assets sotrama "$GITHUB_WORKSPACE"
+          bench setup requirements --dev
+
+      - name: Create test site and install apps
+        working-directory: /home/runner/frappe-bench
+        run: |
+          bench new-site test_site --db-host 127.0.0.1 --db-port 3306 --db-root-password root --admin-password admin
+          bench --site test_site install-app erpnext
+          bench --site test_site install-app hrms
+          bench --site test_site install-app sotrama
+          bench --site test_site migrate
+          bench --site test_site set-config allow_tests true
+
+      - name: Sync and validate Sotrama French Gettext catalog
+        working-directory: /home/runner/frappe-bench
+        run: |
+          cp apps/sotrama/sotrama/locale/fr.po "$RUNNER_TEMP/sotrama-fr.po.before-sync"
+          bench generate-pot-file --app sotrama
+          ./env/bin/python - <<'PY'
+          import ast
+          import json
+          from pathlib import Path
+          from babel.messages.pofile import read_po, write_po
+
+          app_path = Path("apps/sotrama/sotrama")
+          pot_path = app_path / "locale" / "main.pot"
+          non_translatable_options = {
+              "A", "A1", "B", "B(E)", "C", "C1", "C1(E)", "C(E)",
+              "D", "D(E)", "F", "km", "m²", "m³", "t",
+          }
+          with pot_path.open("rb") as pot_file:
+              catalog = read_po(pot_file)
+
+          added = set()
+
+          def add_print_format_strings(value, source_path):
+              if isinstance(value, dict):
+                  for key in ("label", "text"):
+                      message = value.get(key)
+                      if isinstance(message, str) and message:
+                          catalog.add(
+                              message,
+                              locations=[(str(source_path.relative_to(app_path)), 1)],
+                          )
+                          added.add(message)
+                  if value.get("fieldtype") == "Select" and value.get("options"):
+                      for option in value["options"].splitlines():
+                          if option and option not in non_translatable_options:
+                              catalog.add(
+                                  option,
+                                  locations=[(str(source_path.relative_to(app_path)), 1)],
+                              )
+                              added.add(option)
+                  for child in value.values():
+                      add_print_format_strings(child, source_path)
+              elif isinstance(value, list):
+                  for child in value:
+                      add_print_format_strings(child, source_path)
+
+          for source_path in app_path.rglob("print_format/**/*.json"):
+              definition = json.loads(source_path.read_text(encoding="utf-8-sig"))
+              format_data = definition.get("format_data")
+              if format_data:
+                  add_print_format_strings(json.loads(format_data), source_path)
+
+          for source_path in app_path.rglob("*.py"):
+              tree = ast.parse(
+                  source_path.read_text(encoding="utf-8-sig"), filename=str(source_path)
+              )
+              for node in ast.walk(tree):
+                  if not isinstance(node, ast.Call) or not node.args:
+                      continue
+                  function = node.func
+                  is_gettext_call = (
+                      isinstance(function, ast.Name) and function.id == "_"
+                  ) or (
+                      isinstance(function, ast.Attribute) and function.attr == "_"
+                  )
+                  argument = node.args[0]
+                  if (
+                      not is_gettext_call
+                      or not isinstance(argument, ast.Constant)
+                      or not isinstance(argument.value, str)
+                      or argument.value == "and "
+                  ):
+                      continue
+                  catalog.add(
+                      argument.value,
+                      locations=[
+                          (str(source_path.relative_to(app_path)), node.lineno)
+                      ],
+                  )
+                  added.add(argument.value)
+
+          with pot_path.open("wb") as pot_file:
+              write_po(
+                  pot_file,
+                  catalog,
+                  width=None,
+                  sort_output=True,
+                  ignore_obsolete=True,
+              )
+          print(f"Added/verified {len(added)} additional Gettext messages in {pot_path}.")
+          PY
+          bench update-po-files --app sotrama --locale fr
+          ./env/bin/python - <<'PY'
+          import os
+          import re
+          from collections import Counter
+          from pathlib import Path
+          from string import Formatter
+          from babel.messages.pofile import read_po, write_po
+
+          catalog_path = Path("apps/sotrama/sotrama/locale/fr.po")
+          previous_catalog_path = Path(os.environ["RUNNER_TEMP"]) / "sotrama-fr.po.before-sync"
+          with previous_catalog_path.open("rb") as previous_file:
+              previous_catalog = read_po(previous_file)
+          with catalog_path.open("rb") as catalog_file:
+              catalog = read_po(catalog_file)
+
+          for message in catalog:
+              if not message.id or not message.context or message.fuzzy:
+                  continue
+              translations = (
+                  message.string.values()
+                  if isinstance(message.string, dict)
+                  else message.string
+                  if isinstance(message.string, (tuple, list))
+                  else (message.string,)
+              )
+              if all(translations):
+                  continue
+              fallback = previous_catalog.get(message.id)
+              if not fallback or fallback.fuzzy:
+                  continue
+              fallback_translations = (
+                  fallback.string.values()
+                  if isinstance(fallback.string, dict)
+                  else fallback.string
+                  if isinstance(fallback.string, (tuple, list))
+                  else (fallback.string,)
+              )
+              if fallback_translations and all(fallback_translations):
+                  message.string = fallback.string
+
+          problems = []
+          for message in catalog:
+              if not message.id:
+                  continue
+              if message.fuzzy:
+                  problems.append((message.lineno, message.id, "fuzzy"))
+                  continue
+              translations = (
+                  message.string.values()
+                  if isinstance(message.string, dict)
+                  else message.string
+                  if isinstance(message.string, (tuple, list))
+                  else (message.string,)
+              )
+              if any(not translation for translation in translations):
+                  fallback = catalog.get(message.id) if message.context else None
+                  fallback_translations = (
+                      fallback.string.values()
+                      if fallback and isinstance(fallback.string, dict)
+                      else fallback.string
+                      if fallback and isinstance(fallback.string, (tuple, list))
+                      else (fallback.string,)
+                      if fallback
+                      else ()
+                  )
+                  if not fallback or not fallback_translations or any(
+                      not translation for translation in fallback_translations
+                  ):
+                      problems.append(
+                          (message.lineno, message.id, f"untranslated (context={message.context!r})")
+                      )
+
+          for message, errors in catalog.check():
+              if message.fuzzy:
+                  continue
+              for error in errors:
+                  problems.append((message.lineno, message.id, f"invalid translation: {error}"))
+
+          percent_placeholder = re.compile(
+              r"%(?:\(([^)]+)\))?[#0\- +]?(?:\d+)?(?:\.\d+)?[diouxXeEfFgGcrsa%]"
+          )
+
+          def brace_placeholders(value):
+              try:
+                  return Counter(
+                      field
+                      for _, field, _, _ in Formatter().parse(value)
+                      if field is not None
+                  )
+              except ValueError:
+                  return None
+
+          def percent_placeholders(value):
+              return Counter(
+                  match.group(0)
+                  for match in percent_placeholder.finditer(value)
+                  if match.group(0) != "%%"
+              )
+
+          for message in catalog:
+              if not message.id or not message.string:
+                  continue
+              source_braces = brace_placeholders(message.id)
+              source_percent = percent_placeholders(message.id)
+              translations = (
+                  message.string.values()
+                  if isinstance(message.string, dict)
+                  else message.string
+                  if isinstance(message.string, (tuple, list))
+                  else (message.string,)
+              )
+              for translation in translations:
+                  if not translation:
+                      continue
+                  translated_braces = brace_placeholders(translation)
+                  if (
+                      source_braces is not None
+                      and translated_braces != source_braces
+                  ):
+                      problems.append(
+                          (message.lineno, message.id, "brace placeholder mismatch")
+                      )
+                  if percent_placeholders(translation) != source_percent:
+                      problems.append(
+                          (message.lineno, message.id, "percent placeholder mismatch")
+                      )
+
+          if problems:
+              for line, message_id, reason in problems:
+                  print(f"{catalog_path}:{line}: {reason}: {message_id}")
+              raise SystemExit(f"Found {len(problems)} incomplete French translations.")
+
+          with catalog_path.open("wb") as catalog_file:
+              write_po(
+                  catalog_file,
+                  catalog,
+                  width=None,
+                  sort_output=True,
+                  ignore_obsolete=True,
+              )
+
+          translated = sum(1 for message in catalog if message.id)
+          print(f"Validated {translated} French Gettext messages against the generated POT.")
+          PY
+
+      - name: Compile Sotrama French translations
+        working-directory: /home/runner/frappe-bench
+        run: |
+          bench compile-po-to-mo --app sotrama --locale fr --force
+          test -s sites/assets/locale/fr/LC_MESSAGES/sotrama.mo
+
+      - name: Create an ERPNext company for Fleet integration tests
+        working-directory: /home/runner/frappe-bench
+        run: |
+          bench --site test_site execute "frappe.get_doc({'doctype': 'Warehouse Type', 'name': 'Transit'}).insert(ignore_permissions=True) if not frappe.db.exists('Warehouse Type', 'Transit') else None"
+          bench --site test_site execute "frappe.get_attr('erpnext.setup.setup_wizard.operations.company_setup.create_fiscal_year_and_company')({'company_name': 'Sotrama CI', 'company_abbr': 'SCI', 'currency': 'DZD', 'country': 'Algeria'})"
+
+      - name: Run Sotrama server-side integration tests
+        working-directory: /home/runner/frappe-bench
+        run: bench --site test_site run-tests --app sotrama

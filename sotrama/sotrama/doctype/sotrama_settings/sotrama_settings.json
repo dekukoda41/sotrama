@@ -1,0 +1,82 @@
+{
+ "doctype": "DocType",
+ "name": "Sotrama Settings",
+ "module": "Sotrama",
+ "issingle": 1,
+ "istable": 0,
+ "is_submittable": 0,
+ "track_changes": 1,
+ "fields": [
+  {
+   "fieldtype": "Tab Break",
+   "fieldname": "tab_algerian_company",
+   "label": "Algerian Company"
+  },
+  {
+   "fieldtype": "Section Break",
+   "fieldname": "section_algeria_company",
+   "label": "Company registration identifiers",
+   "description": "Optional Algerian identifiers on the standard ERPNext Company record. NIF remains in ERPNext's Tax ID field."
+  },
+  {
+   "fieldtype": "Check",
+   "fieldname": "enable_algerian_company_fields",
+   "label": "Enable Algerian registration fields",
+   "default": "0",
+   "description": "Show Article d'imposition, NIS, RC and Capital Social on Company records whose Country is Algeria. Enter NIF in ERPNext's Tax ID field. Disabling this hides the Sotrama fields without deleting their definitions or saved values."
+  },
+  {
+   "fieldtype": "Tab Break",
+   "fieldname": "tab_hr_integration",
+   "label": "HR & Designations"
+  },
+  {
+   "fieldtype": "Section Break",
+   "fieldname": "section_public_works_designations",
+   "label": "BTPH job-title catalogue",
+   "description": "Import the curated 202-title French BTPH catalogue into HRMS > Designation. Only missing titles are added; existing designations are left untouched. Manage employees and their assignments in the standard HRMS Employee form."
+  },
+  {
+   "fieldtype": "Check",
+   "fieldname": "setup_initialized",
+   "label": "Setup Initialized",
+   "default": "0",
+   "hidden": 1,
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "Internal marker used to recover an interrupted first-time Sotrama setup."
+  }
+ ],
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 0,
+   "print": 1,
+   "email": 0,
+   "report": 0,
+   "export": 0,
+   "share": 0
+  },
+  {
+   "role": "Accounts Manager",
+   "read": 1,
+   "write": 0,
+   "create": 0,
+   "delete": 0,
+   "print": 0,
+   "email": 0,
+   "report": 0,
+   "export": 0,
+   "share": 0
+  },
+  {
+   "role": "HR Manager",
+   "read": 1
+  }
+ ],
+ "icon": "settings-2",
+ "description": "Central Sotrama setup for Algerian Company registration and the Frappe HR job-title catalogue. Fleet operating policies are available from Fleet Settings."
+}

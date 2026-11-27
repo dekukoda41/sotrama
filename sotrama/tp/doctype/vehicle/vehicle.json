@@ -4,26 +4,59 @@
  "module": "TP",
  "fields": [
   {
-   "label": "License Plate",
+   "fieldtype": "Tab Break",
+   "fieldname": "tab_vehicle_identity",
+   "label": "Vehicle Identity"
+  },
+  {
+   "fieldtype": "Section Break",
+   "fieldname": "section_vehicle_identity",
+   "label": "Identification"
+  },
+  {
+   "label": "Registration / Fleet Number",
    "fieldname": "license_plate",
    "fieldtype": "Data",
    "in_list_view": 1,
    "reqd": 1,
-   "description": "Vehicle registration number (immatriculation)"
+   "description": "Enter the road registration plate, or the internal fleet number for off-road machinery. Use one stable identifier for every unit."
   },
   {
    "label": "Vehicle Make",
    "fieldname": "vehicle_make",
    "fieldtype": "Link",
    "options": "Vehicle Make",
-   "description": "Manufacturer (e.g. Mercedes, Volvo, Scania)"
+   "description": "Select an active manufacturer; available models are filtered by this make."
   },
   {
    "label": "Model",
    "fieldname": "model",
    "fieldtype": "Link",
    "options": "Vehicle Model",
-   "description": "Specific model variant"
+   "description": "Select an active model belonging to the selected make."
+  },
+  {
+   "label": "Company",
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "options": "Company",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "Owning company for this vehicle and its stock transactions."
+  },
+  {
+   "label": "Vehicle / Equipment Category",
+   "fieldname": "vehicle_category",
+   "fieldtype": "Select",
+   "options": "\nTruck\nDump Truck\nTractor Unit\nTrailer\nSemi-trailer\nTanker\nPickup\nUtility Vehicle\nBulldozer\nWheel Loader\nExcavator\nBackhoe Loader\nMotor Grader\nRoad Roller\nAsphalt Paver\nConcrete Mixer Truck\nConcrete Pump\nMobile Crane\nBridge Crane\nForklift\nWater Tanker\nFuel Tanker\nLow-bed Trailer\nCompressor\nGenerator\nSweeper\nOther Equipment",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "Choose the road vehicle or public-works machine type."
+  },
+  {
+   "fieldtype": "Column Break",
+   "fieldname": "column_vehicle_identity"
   },
   {
    "label": "Year of Manufacture",
@@ -45,21 +78,18 @@
    "description": "Engine serial number"
   },
   {
-   "label": "Vehicle Category",
-   "fieldname": "vehicle_category",
-   "fieldtype": "Select",
-   "options": "\nTruck\nTrailer\nSemi-trailer\nTanker\nGrader\nRoller\nPaver\nBridge Crane\nUtility Vehicle",
-   "in_list_view": 1,
-   "in_standard_filter": 1,
-   "description": "Category of public works vehicle"
+   "fieldtype": "Section Break",
+   "fieldname": "section_specs",
+   "label": "Technical Specifications",
+   "collapsible": 1
   },
   {
-   "label": "Vehicle Class",
+   "label": "Weight Class (Optional)",
    "fieldname": "vehicle_class",
    "fieldtype": "Select",
    "options": "\nLight\nMedium\nHeavy",
    "in_standard_filter": 1,
-   "description": "Weight class (Light < 3.5T, Medium 3.5-12T, Heavy > 12T)"
+   "description": "Use for road vehicles where applicable; leave blank for equipment if this classification is not meaningful."
   },
   {
    "label": "Tonnage",
@@ -74,12 +104,16 @@
    "description": "Total number of axles"
   },
   {
+   "fieldtype": "Column Break",
+   "fieldname": "column_specs"
+  },
+  {
    "label": "Fuel Type",
    "fieldname": "fuel_type",
    "fieldtype": "Select",
    "options": "\nDiesel\nGasoline\nHybrid\nElectric\nLPG",
    "default": "Diesel",
-   "in_list_view": 1
+   "in_list_view": 0
   },
   {
    "label": "Fuel Capacity (L)",
@@ -91,45 +125,122 @@
    "label": "Current Odometer (km)",
    "fieldname": "current_odometer",
    "fieldtype": "Float",
+   "in_list_view": 1,
    "description": "Latest recorded odometer reading in km"
+  },
+  {
+   "fieldtype": "Tab Break",
+   "fieldname": "tab_vehicle_value",
+   "label": "Acquisition & Value"
+  },
+  {
+   "fieldtype": "Section Break",
+   "fieldname": "section_acquisition",
+   "label": "Acquisition & Valuation",
+   "collapsible": 1
   },
   {
    "label": "Acquisition Date",
    "fieldname": "acquisition_date",
    "fieldtype": "Date",
-   "in_list_view": 1,
-   "description": "Date the vehicle was acquired"
+   "in_list_view": 0,
+   "description": "Date the vehicle was acquired",
+   "permlevel": 1
   },
   {
    "label": "Acquisition Value (DZD)",
    "fieldname": "acquisition_value",
    "fieldtype": "Currency",
-   "description": "Purchase value in Algerian Dinars"
+   "description": "Purchase value in Algerian Dinars; cannot be negative.",
+   "permlevel": 1
   },
   {
    "label": "Current Value (DZD)",
    "fieldname": "current_value",
    "fieldtype": "Currency",
-   "description": "Current book value (after depreciation)"
+   "description": "Current book value (after depreciation)",
+   "permlevel": 1
   },
   {
    "label": "Depreciation Rate (%)",
    "fieldname": "depreciation_rate",
    "fieldtype": "Float",
    "default": "10",
-   "description": "Annual depreciation rate as percentage"
+   "description": "Annual depreciation rate as a percentage (0 to 100).",
+   "permlevel": 1
   },
   {
    "label": "Salvage Value (DZD)",
    "fieldname": "salvage_value",
    "fieldtype": "Currency",
-   "description": "Estimated residual value at end of useful life"
+   "description": "Estimated residual value at end of useful life; cannot exceed Acquisition Value.",
+   "permlevel": 1
   },
   {
    "label": "Insurance Value (DZD)",
    "fieldname": "insurance_value",
    "fieldtype": "Currency",
-   "description": "Insured value of the vehicle"
+   "description": "Insured value of the vehicle",
+   "permlevel": 1
+  },
+  {
+   "fieldtype": "Tab Break",
+   "fieldname": "tab_vehicle_assignment",
+   "label": "Assignment & Documents"
+  },
+  {
+   "fieldtype": "Section Break",
+   "fieldname": "section_documents",
+   "label": "Vehicle Documents",
+   "collapsible": 1,
+   "description": "Store the vehicle's registration certificate (carte grise), insurance, technical inspection and each renewal here. Attach the scanned file to each row."
+  },
+  {
+   "label": "Registration Document",
+   "fieldname": "registration_document",
+   "fieldtype": "Attach",
+   "hidden": 1,
+   "description": "Carte grise / registration certificate"
+  },
+  {
+   "label": "Insurance Document",
+   "fieldname": "insurance_document",
+   "fieldtype": "Attach",
+   "hidden": 1,
+   "description": "Insurance certificate"
+  },
+  {
+   "label": "Pollution Certificate",
+   "fieldname": "pollution_document",
+   "fieldtype": "Attach",
+   "hidden": 1,
+   "description": "Pollution Under Control certificate"
+  },
+  {
+   "label": "Technical Inspection Certificate",
+   "fieldname": "technical_document",
+   "fieldtype": "Attach",
+   "hidden": 1,
+   "description": "Technical inspection (visite technique)"
+  },
+  {
+   "label": "Vehicle Documents",
+   "fieldname": "vehicle_documents",
+   "fieldtype": "Table",
+   "options": "Vehicle Document",
+   "in_standard_filter": 1,
+   "description": "Add one row per document: choose its type, enter issue and expiry dates, then upload the scan in the Attachment column. Open the attachment to view or print the original document. Status is updated automatically using the configured alert window."
+  },
+  {
+   "label": "Notes",
+   "fieldname": "notes",
+   "fieldtype": "Text Editor"
+  },
+  {
+   "fieldtype": "Section Break",
+   "fieldname": "section_assignment",
+   "label": "Fleet Assignment",
+   "collapsible": 1
   },
   {
    "label": "Status",
@@ -147,12 +258,8 @@
    "description": "Base depot or current worksite"
   },
   {
-   "label": "Company",
-   "fieldname": "company",
-   "fieldtype": "Link",
-   "options": "Company",
-   "in_standard_filter": 1,
-   "description": "Owning company for this vehicle and its stock transactions."
+   "fieldtype": "Column Break",
+   "fieldname": "column_assignment"
   },
   {
    "label": "Parts Warehouse",
@@ -162,21 +269,20 @@
    "description": "Source warehouse used when maintenance parts are issued."
   },
   {
-   "label": "Primary Driver",
+   "label": "Primary Driver / Operator",
    "fieldname": "primary_driver",
    "fieldtype": "Link",
    "options": "Driver",
+   "allow_on_submit": 1,
    "in_list_view": 1,
-   "description": "Assigned primary driver"
+   "description": "Regular road driver or equipment operator, where assigned."
   },
   {
    "label": "Company Classification",
    "fieldname": "company_classification",
    "fieldtype": "Link",
    "options": "Company Classification",
-   "in_list_view": 1,
-   "in_standard_filter": 1,
-   "reqd": 1,
+   "hidden": 1,
    "description": "Grade classification of the owning company (I-IX)"
   },
   {
@@ -193,48 +299,16 @@
    "options": "Cost Center"
   },
   {
+   "fieldtype": "Column Break",
+   "fieldname": "column_asset"
+  },
+  {
    "label": "Asset",
    "fieldname": "asset",
    "fieldtype": "Link",
    "options": "Asset",
-   "description": "Linked fixed asset record"
-  },
-  {
-   "label": "Registration Document",
-   "fieldname": "registration_document",
-   "fieldtype": "Attach",
-   "description": "Carte grise / registration certificate"
-  },
-  {
-   "label": "Insurance Document",
-   "fieldname": "insurance_document",
-   "fieldtype": "Attach",
-   "description": "Insurance certificate"
-  },
-  {
-   "label": "Pollution Certificate",
-   "fieldname": "pollution_document",
-   "fieldtype": "Attach",
-   "description": "Pollution Under Control certificate"
-  },
-  {
-   "label": "Technical Inspection Certificate",
-   "fieldname": "technical_document",
-   "fieldtype": "Attach",
-   "description": "Technical inspection (visite technique)"
-  },
-  {
-   "label": "Notes",
-   "fieldname": "notes",
-   "fieldtype": "Text Editor"
-  },
-  {
-   "label": "Vehicle Documents",
-   "fieldname": "vehicle_documents",
-   "fieldtype": "Table",
-   "options": "Vehicle Document",
-   "in_standard_filter": 1,
-   "description": "Vehicle documents with expiry tracking (registration, insurance, pollution, etc.)"
+   "description": "Optional ERPNext fixed asset; it must belong to the same Company.",
+   "permlevel": 1
   }
  ],
  "links": [],
@@ -242,10 +316,10 @@
  "issingle": 0,
  "is_submittable": 1,
  "track_changes": 1,
- "name_field": "license_plate",
+ "title_field": "license_plate",
+ "show_title_field_in_link": 1,
  "naming_rule": "Expression",
- "naming_expression": "VEH-.YYYY.-.####",
- "autoname": "format",
+ "autoname": "VEH-.YYYY.-.####",
  "permissions": [
   {
    "role": "System Manager",
@@ -276,24 +350,39 @@
    "print": 1,
    "email": 1,
    "export": 1,
-   "report": 1,
-   "share": 1
+   "report": 1
   },
   {
    "role": "Workshop",
    "permlevel": 0,
    "read": 1,
-   "write": 1,
-   "create": 1,
+   "write": 0,
+   "create": 0,
    "delete": 0,
-   "submit": 1,
-   "cancel": 1,
+   "submit": 0,
+   "cancel": 0,
    "amend": 0,
    "print": 1,
    "email": 0,
    "export": 0,
    "report": 0,
    "share": 0
+  },
+  {
+   "role": "System Manager",
+   "permlevel": 1,
+   "read": 1,
+   "write": 1,
+   "create": 1
+  },
+  {
+   "role": "Fleet Manager",
+   "permlevel": 1,
+   "read": 1,
+   "write": 1,
+   "create": 1
   }
- ]
+ ],
+ "icon": "truck",
+ "description": "Vehicle records for Sotrama public-works fleet operations."
 }

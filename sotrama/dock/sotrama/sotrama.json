@@ -1,0 +1,31 @@
+{
+ "app": "sotrama",
+ "creation": "2026-11-17 00:00:00",
+ "docstatus": 0,
+ "doctype": "Dock",
+ "idx": 0,
+ "items": [
+  {
+   "added": 0,
+   "hidden": 0,
+   "icon": "building-2",
+   "link_to": "Sotrama",
+   "link_type": "Workspace",
+   "title": "Overview"
+  },
+  {
+   "added": 0,
+   "hidden": 0,
+   "icon": "truck",
+   "link_to": "Sotrama Fleet",
+   "link_type": "Workspace",
+   "title": "Fleet"
+  }
+ ],
+ "modified": "2026-11-19 09:30:00",
+ "modified_by": "Administrator",
+ "name": "sotrama",
+ "owner": "Administrator",
+ "standard": 1,
+ "user": ""
+}

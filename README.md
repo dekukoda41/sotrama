@@ -1,55 +1,356 @@
-# Sotrama — Algerian Localization & TP Fleet Management for ERPNext
+# Sotrama — Algerian Business Extensions for ERPNext
 
-Adds **NIF, NIS, and RC** fields to the ERPNext **Company** doctype, plus a
-**TP (Travaux Publics / Public Works)** fleet-management module for Algerian
-construction companies. Classification scoring and payroll/legal calculations
-must be validated against applicable Algerian regulations before statutory use.
+Sotrama is a modular Frappe application that extends ERPNext and Frappe HR for
+Algerian businesses, with an initial focus on **BTPH / Travaux Publics**. It is
+installed beside the official apps and uses their standard records, workflows,
+permissions and accounting/inventory transactions. It does not fork or patch
+Frappe, ERPNext or HRMS core.
 
-## What it does
-
-### Algerian Localization
-- Adds `custom_nif` (Tax ID), `custom_nis` (Statistical ID), and `custom_rc` (Trade Registry) fields to the **Company** doctype — `custom_` prefixed to prevent collisions with future ERPNext fields
-- Fields are defined in code, not the database — they survive `bench update` and migrate cleanly
-- Created by the app's `after_install` and `after_migrate` hooks; fields are available on Company records and are not conditionally created by country
-
-### TP Fleet Management (Public Works)
-
-| DocType | Purpose |
-|---|---|
-| **Vehicle** | Fleet vehicle master — license plate, chassis, tonnage, odometer, status, Algerian docs, document expiry child table |
-| **Driver** | Driver master — license number, class, expiry, medical, safety certifications |
-| **Maintenance Job Card** | Repair/service work order — parts, labour, vendor and costs; stock issue requires a company and source warehouse configured on the Vehicle |
-| **Breakdown Incident** | Unexpected failure tracking — auto-creates job cards, tracks downtime, marks vehicle Out of Service |
-| **Maintenance Schedule** | Preventive maintenance — calendar or mileage-based, auto-generates next occurrence |
-| **Vehicle Inspection** | Structured checklist — pass/fail per item, auto-creates ERPNext Issues for defects |
-| **Operational Task** | Task assignment — vehicle ↔ driver ↔ project, tracks hours and output |
-| **Company Classification** | Algerian grade (I–IX) calculator per Arrêté Interministériel formula |
-| **Vehicle Document** | Child table — document expiry tracking (registration, insurance, pollution, etc.) |
-| **Maintenance Job Type** | Master for service categories (Oil Change, Brake Service, etc.) |
-| **Vehicle Make / Model** | Manufacturer and model masters |
-
-### Supporting Child Tables
-- **Job Card Part** — parts consumed with item validation and cost calculation
-- **Job Card Labour** — labour lines with mechanic and rate
-- **Job Card Other Cost** — incidental costs (toll, fuel, rental, etc.)
-- **Job Card Photo** — photos attached to job cards
-- **Breakdown Photo** — photos attached to breakdown incidents
-- **Inspection Item** — checklist items with Defective/Okay status and remarks enforcement
-
-## Why this app?
-
-Custom fields added via the Desk UI (Customize Form) live in the database. On `bench update`, they can be wiped or conflicted. Sotrama defines all customizations in **code** — they're version-controlled, reinstall cleanly on new sites, and never conflict with ERPNext upgrades.
-
-**No custom CSS** — the app follows standard Frappe Desk styling and uses only standard Frappe UI components. All client-side behavior is handled through standard DocType JS files.
+The app is designed to grow by adding standard Frappe modules. It includes the
+**Sotrama** landing module and **TP** (public-works fleet operations). Algerian
+Company registration and HR designation setup are surfaced from the central
+Sotrama workspace rather than a separate Algerian Localization Desk destination.
+Frappe filters navigation links by the destination DocType permissions; links
+do not grant access to Company, HR or Fleet records.
 
 ## Compatibility
 
-- Frappe Framework 16 and ERPNext 16
-- Python 3.14 (matching the Frappe v16 runtime requirement)
-- Node.js 24 for the v16 asset toolchain
-- Frappe HRMS is optional for fleet features; this app does not currently implement Algerian payroll statutory calculations.
+- Python: **3.14**
+- Frappe Framework: **16.60.0 or later, below 17.0.0**
+- ERPNext: **16.60.0 or later, below 17.0.0**
+- Frappe HR (HRMS): **16.60.0 or later, below 17.0.0**
+
+The current source review was checked against Frappe **16.60.2**, ERPNext
+**16.60.0** and HRMS **16.60.0**. HRMS 16.60 requires Frappe 16.60.0 or later.
+The application and target release version is **1.3.6**. This source tree is
+the release candidate for `v1.3.6`; publish it only after CI and packaging
+verification succeed.
+
+## Architecture and source of truth
+
+Sotrama links to the standard ERPNext / Frappe HR records wherever they exist:
+
+- `Company`, `Employee`, `Department`, `Project`, `Asset`, `Item`, `Supplier`,
+  `Warehouse`, `Cost Center` and `Stock Entry` remain authoritative.
+- Maintenance stock consumption uses ERPNext Stock Entry and its normal
+  valuation/accounting pipeline.
+- Drivers may link to the authoritative HRMS `Employee` record; Sotrama does
+  not create a parallel employee register. Only HR Manager/System Manager can
+  change the link; Fleet Manager and Workshop users are not granted broad HRMS
+  Employee read access.
+- Job titles use Frappe HR's standard `Designation` master. Sotrama does not
+  introduce a parallel position or job-title DocType.
+- Fleet records retain a standard `Company` link to support multiple legal
+  entities (for example, a construction company, factory and quarry).
+
+The app does not create parallel general ledgers, stock ledgers, employees or
+company records.
+
+The code follows Frappe's application lifecycle boundaries: `hooks.py` contains
+framework metadata and dotted hook paths; `setup/` owns installation,
+uninstallation and optional Company configuration; `migrations/` contains
+domain-specific one-off data transformations; and `patches/` contains only
+the ordered migration entry points registered in `patches.txt`. Fleet DocTypes
+and their controllers remain grouped under `tp/doctype/`.
+
+## Modules
+
+### Algerian Company Setup
+
+The optional Algerian Company extension adds these fields to the standard
+ERPNext `Company` DocType only after an administrator explicitly enables it:
+
+| Field | Purpose |
+|---|---|
+| `Company.tax_id` | Standard ERPNext field used for NIF / Matricule Fiscal; Sotrama does not create a duplicate NIF field |
+| `custom_article_imposition` | Article d'imposition |
+| `custom_nis` | Numéro d'Identification Statistique |
+| `custom_rc` | Registre de Commerce |
+| `custom_capital_social` | Registered share capital, stored as Currency using the Company's default currency |
+
+**Enable the extension:** sign in as System Manager, open **Sotrama → Sotrama
+Settings → Algerian Company**, and enable **Show additional Algerian fields**. The
+fields are displayed on Company records whose Country is Algeria. They remain
+optional and do not replace standard ERPNext Company fields.
+
+The fields are deliberately not installed as fixtures and are never created
+or altered by a migration. Saving the setting after explicitly enabling it is
+the authorization for Sotrama to create any missing fields. Existing fields
+are checked first: Sotrama refuses a field-type mismatch or a field owned by
+another module rather than silently changing or
+taking it over. Review the conflict and resolve it deliberately before
+enabling the feature.
+
+Disabling the setting hides Sotrama-owned Company fields; it does not delete
+their metadata or stored values. Before app uninstall, Sotrama detaches its
+managed Company fields into Frappe's persistent `Custom` module so Frappe's
+normal removal of app-owned modules does not delete those fields or their
+stored values. Sotrama retains an ownership marker in each generated field's
+description and recognizes only marked fields after reinstall; it does not
+claim an unrelated system-generated field just because the fieldname matches.
+A legacy `custom_nif` field from an older installation is hidden, not deleted,
+only after an ownership-verified, conflict-free migration. Sotrama copies its
+values into standard `Company.tax_id` only when the field metadata proves Sotrama
+ownership and the standard Tax ID is empty; the update is conditional so a
+concurrent Tax ID change cannot be overwritten. Existing Tax IDs are never
+overwritten. Conflicting values, unowned legacy fields and unresolved schema
+cases remain visible/untouched and are reported in Error Log for manual
+reconciliation. The legacy field and its original values are retained.
+
+### HR & Designations — Public Works Catalogue
+
+Sotrama can optionally add the company's curated **202-title French BTPH
+catalogue** to the standard Frappe HR `Designation` master. Open **Sotrama →
+Sotrama Settings → HR & Designations**, enable **Import BTPH job titles on save**,
+and save. When the setting is enabled, the **HR & Designations →
+Create Missing Job Titles** form action can also be used later
+to add newly introduced catalogue entries without toggling the setting. This
+creates job-title master records only;
+it does not create Employees, Drivers or employee assignments. The app creates
+only missing records and keeps existing Designations unchanged. The option is
+off by default; disabling it later does not delete records already used by
+Employees. HR users continue creating, editing and assigning titles through
+the standard **Human Resources → Employee → Designation** screens.
+
+The catalogue follows the job titles supplied for the company, with exact
+duplicate entries removed. It covers management, BTPH site operations, heavy
+equipment, transport, workshops, engineering, laboratories, HSE, roads and
+asphalt, concrete plants, quarries, VRD and utilities, logistics, HR and
+accounting. No generic work-family labels are written into HRMS's optional
+Description field; HR can enter accurate job descriptions and Required Skills
+for each role using the standard Designation form.
+
+### TP — Public Works Fleet
+
+The TP module currently provides:
+
+| DocType | Purpose |
+|---|---|
+| **Vehicle** | Fleet register, registration/chassis details, ownership, valuation and vehicle documents |
+| **Driver** | Driver register with optional HRMS Employee link, licence and compliance information |
+| **Maintenance Job Card** | Repair and service work orders, labour, parts, other costs and stock issue integration |
+| **Breakdown Incident** | Failure tracking, downtime and linked maintenance work |
+| **Maintenance Schedule** | Recurring time- or mileage-based preventive maintenance |
+| **Vehicle Inspection** | Inspection checklist, defects and safety follow-up |
+| **Operational Task** | Vehicle/driver/project assignment and operational output |
+| **Company Classification** | Public-works company classification record |
+| **Vehicle Make / Model** | Fleet reference data |
+
+Supporting child tables hold vehicle documents, job-card parts/labour/costs,
+photos, inspection items and restricted driver compliance history.
+
+Vehicle Model records use an internal deterministic key derived from the linked
+Vehicle Make record and model designation. The form and Link fields display the
+manufacturer's model designation, while the make selector scopes duplicate
+checks and model choices. This avoids collisions when different valid make/model
+names contain the same hyphen-separated text.
+
+The **Sotrama Fleet** workspace presents submitted-fleet indicators first, then
+descriptive cards for daily operations, maintenance and safety, reports, and
+reference masters. Fleet Cost Analysis is reachable from the role-restricted
+Fleet Management Reports workspace in the TP sidebar. Long entry forms use
+task-oriented tabs (identity, acquisition, execution, costs and evidence) while
+short reference forms remain compact and follow the standard Frappe form layout.
+
+On a draft Maintenance Job Card, the **Add Entry** toolbar group names the
+record type explicitly: **Add Spare Part (Item)** selects an ERPNext stock
+Item, **Add Mechanic (Employee)** selects an active Frappe HR Employee, and
+**Add Other Cost** records a separate expense. The table headings explain
+where each record comes from and how it affects stock or maintenance costs.
+Part and labour line amounts and job-card totals recalculate as quantities,
+hours, rates or additional costs change; removing a line recalculates the
+totals too. The server verifies that a selected mechanic belongs to the same
+Company as the work order. Server-side validation remains authoritative when
+the document is saved or submitted. Vehicle Inspections also provide an explicit **Add
+Inspection Check** action alongside the standard checklist loaded for new
+inspections.
+
+Workshop employee selection uses a restricted server-side lookup: Fleet Manager
+and Workshop users see only active Employee names, IDs and job titles for a
+Company whose vehicles they can access. They are not granted broad read
+permission on HRMS Employee records or access to employees' personal
+information.
+
+#### Fleet security and audit controls
+
+- Driver data is separated by need-to-know: Fleet Manager can see approved
+  operational contacts and driving eligibility (licence category/expiry),
+  while licence number, residential address, hire date, date of birth, national ID,
+  medical/training/professional-certificate records and the HRMS Employee link
+  remain HR-only. Workshop sees only base driver identity/company/status, not
+  elevated fields. The Employee link is editable only by HR Manager/System
+  Manager; linking an Employee does not copy personal mobile numbers or
+  personal email into Fleet-visible fields. Review existing Driver operational
+  contact values created by older versions before granting Fleet access; the
+  app does not erase them automatically because they may be approved company
+  contacts.
+- Files attached to Driver records or Driver compliance rows are forced into
+  private storage. Frappe's File download controller is extended through the
+  supported `extend_doctype_class` hook so non-HR users cannot download these
+  files, even if a file was previously public or detached. Existing local files
+  are migrated to private storage. Existing remote links are removed from the
+  attachment list and attachment comments. Where the URL is stored in an
+  HR-only Attach field, that field retains it for HR review; otherwise HR must
+  recover/re-upload the document. The migration records remote attachments in
+  Error Log. File list/search, Driver form docinfo, attachment logs and the
+  attachment gallery also suppress this metadata for non-HR roles, with
+  server-side File read/download checks as a second layer.
+- Vehicle and Driver Company ownership becomes immutable after submission.
+  Inter-company transfers need a controlled transfer process; changing the
+  Company field directly would rewrite the context of historical Fleet/HR
+  records.
+- Road-licence fields are optional on Driver records so off-road public-works
+  equipment operators are not incorrectly treated as regulated road
+  transport drivers. A Transport Operational Task records whether it is for
+  **Compte d'autrui** or **Compte propre** and requires an explicit regulatory
+  applicability decision before submission. A pending decision blocks submit;
+  a confirmed regulated activity requires a current licence
+  number/category/expiry. When **Require Professional Certificate for
+  Transport** is enabled (default), it additionally requires the professional
+  certificate and current medical/drug-screening clearances. A decision that
+  own-account or other transport is not subject to those rules requires an
+  authority reference, decision date and evidence attachment. The app does not
+  infer the legal treatment of own-account hauling; confirm it with the
+  competent Algerian transport authority.
+- An open Breakdown Incident or uncleared safety-critical inspection prevents
+  a Vehicle from returning to service or being cancelled. Critical inspections
+  require a passing follow-up rather than cancellation; unresolved breakdowns
+  require a recorded resolution date and notes. Workflow-managed status and
+  restoration fields are validated server-side.
+- Submitted Fleet records are retained for audit and cannot be deleted through
+  normal document deletion. Draft records remain deletable.
+- **Upcoming Document Expiries** is available to Fleet Manager and Workshop;
+  the financial **Fleet Cost Analysis** report is restricted to Fleet
+  Manager/System Manager in **Fleet Management Reports**.
+
+Inspection checklist rows start at **Not Checked**, never at Okay. Drafts may
+be saved while an inspection is in progress, but submission is blocked until
+every checklist item is explicitly marked Okay or Defective; defective items
+require remarks. Overall status is calculated from the completed checklist:
+Pass for all-Okay results, Conditional Pass for non-critical defects, and Fail
+for safety-critical defects. The server repeats these checks before submission.
+
+**TP Settings** remains the configuration area for fleet-specific defaults and
+operating policies: per-Company department, Cost Center and parts Warehouse;
+driver/employee rules; compliance policies; and reminder windows. It does not
+replace the new app-wide **Sotrama Settings**. Standard Company, Warehouse,
+Cost Center, Department and Employee records remain the source of truth. The
+primary Company and per-Company defaults are restricted to System Manager
+because TP Settings is a global singleton; Fleet Manager receives only the
+defaults returned for a Company they may access when they have permission to
+create the target Fleet record. Raw TP Company Defaults child-table list/value
+queries and generic TP Settings list queries are blocked for lower roles;
+single-value RPCs enforce the same field permlevels as the Desk form. DocShare
+sharing of these protected settings records and Company-scoped Fleet records is
+blocked for every role, including System Manager; use Company User Permissions
+instead. Legacy shares are removed during migration so shared-record query paths
+cannot bypass the policy.
+
+Scheduled Fleet reminders are assigned only to an enabled role user who can
+read the referenced Vehicle, Maintenance Schedule or Driver under that user's
+Company permissions; otherwise they remain assigned to Administrator. Driver
+licence numbers never appear in Fleet ToDos, and safety-training or professional
+compliance reminders are routed to an authorized HR Manager. Breakdown links on
+Maintenance Job Cards are workflow-managed and must match the same Vehicle and
+Company. The one-time 1.3.x upgrade patch sanitizes and reassigns legacy generated
+Fleet ToDos that were created before Company-aware routing; this scan does not
+run on every ordinary site migration. The restricted
+Employee name/designation lookup is limited to the target Fleet workflow and
+checks the applicable Company scope for the target record, Employee and Vehicle;
+it does not grant Fleet Manager or Workshop general Employee read access.
+The primary Company Link is returned only through the target Fleet DocType's
+Company User Permission scope; this does not grant general Company read access.
+Server-side Link validation also checks read access to the exact linked Vehicle,
+Driver, Project, Inspection, Schedule, Item, Warehouse, Cost Center, Department
+or Company Classification, and applies that linked DocType's own Company scope
+where applicable. A target record's Company match alone is not treated as proof
+that the caller may read the linked record.
+
+## Reports and printing
+
+The module includes the standard Script Reports **Fleet Cost Analysis** and
+**Upcoming Document Expiries**. They declare their reference DocTypes, use
+Company/Vehicle/date filters where applicable, and use permission-aware access
+for parent fleet records. Fleet Cost Analysis labels depreciation as an
+estimate; it is not a substitute for ERPNext Asset depreciation or ledger
+balances. Its maintenance cost fields currently use the Frappe site's default
+currency, so compare legal entities only when their fleet cost data shares that
+currency. Company-specific multi-currency conversion is not yet implemented.
+
+Maintenance Job Card and Vehicle Inspection ship with standard Frappe Print
+Format defaults using the **Print Format Editor** (`format_data`, stored as
+Builder Beta layouts). To
+customize one without editing app files, duplicate it from the Print Format
+list and edit the resulting site-owned copy in the standard Print Format
+editor. Sotrama does not pin a PDF renderer in its source files. Frappe 16.60
+uses Chromium for editor formats by default, while supported alternatives
+can be selected on a site-owned copy. Frappe 16.60 also improves report
+printing with a full-page preview and server-rendered report output.
+
+## Navigation and permissions
+
+- **Sotrama** is the app workspace and home route (`/desk/sotrama`). Its Company
+  & HR Setup card links to standard Company and Designation records and the
+  Sotrama settings form. Its Fleet Configuration card links to Fleet Settings.
+- **TP** is the public-works Fleet module. The app Dock exposes the Sotrama
+  overview and Fleet workspace; the Fleet workspace groups operational lists,
+  maintenance, reports and reference masters into descriptive cards.
+- The former Algerian Localization workspace and sidebar are retired by a
+  one-time migration cleanup. Algerian Company fields and the HR designation
+  catalogue remain available from the central Sotrama setup; no Company or HR
+  records are moved or duplicated.
+- Fleet operational defaults and compliance policies remain in the dedicated
+  Fleet Settings singleton, linked from the same Sotrama setup workspace. Its
+  field-level permissions remain distinct from Company and HR settings.
+- App visibility is controlled by `sotrama.permissions.has_app_permission`;
+  visibility does not grant DocType permissions. Normal Frappe role and
+  document permissions still apply.
+- For company/branch isolation, assign standard Frappe **User Permission**
+  records for the `Company` DocType to each restricted user. Fleet documents
+  carry a Company Link; Sotrama explicitly checks Company User Permissions after
+  deriving Company server-side, in addition to Frappe's linked-field checks and
+  permission-aware list queries. Without a Company restriction, a user
+  with the relevant Fleet role may see records across all Companies granted by
+  that role. Every Vehicle, Driver, Operational Task, Job Card, Inspection,
+  Breakdown, Maintenance Schedule and Company Classification must be assigned
+  to one legal Company; assign existing unscoped records before editing or
+  using them in new operations. For restrictions across all Fleet DocTypes, set
+  the User Permission to **Apply To All Document Types**; otherwise Frappe's
+  `Applicable For` scope is respected.
+- Report Company filters provide autocomplete from Company values on Vehicle
+  records visible to the current user; they do not expand Fleet Manager's read
+  permissions on the standard Company DocType. Vehicle filters remain linked
+  to the permission-controlled Vehicle register.
+- Vehicle, Driver and Company Classification Company selectors use narrow
+  Link lookups scoped to the corresponding Company User Permission context,
+  without granting general Company read access.
+- System Manager controls the Algerian Company extension. HR Manager can
+  change only the level-1 HR designation option; Accounts Manager can read the
+  settings page but cannot change its options.
+
+On upgraded Frappe sites that still use the legacy Desktop icon grid, a System
+Manager can open **Desktop Settings** and select **Apps** as the Desktop Page
+to show installed apps alongside ERPNext and Frappe HR.
+
+## Compatibility
+
+- Frappe Framework `>=16.60.0,<17.0.0`
+- ERPNext `>=16.60.0,<17.0.0`
+- Frappe HR / HRMS `>=16.60.0,<17.0.0`
+- Python `>=3.14,<3.15`
+- Node.js 24 is required by the Frappe v16 Bench asset toolchain; Sotrama
+  itself currently has no Node.js package dependencies or bundle build.
+- Sotrama version: **1.3.6 (unreleased development tree)**
+
+The minimum version reflects the v16.60 platform baseline. It does not mean
+that an existing site has been upgraded: verify the installed versions with
+`bench version` before installing this release. Sotrama does not currently
+implement Algerian payroll statutory calculations; payroll rules must not be
+assumed compliant without a separate legal and accounting validation.
 
 ## Installation
+
+Install the app in a Bench that already has compatible ERPNext and HRMS apps:
 
 ```bash
 cd ~/frappe-bench
@@ -58,26 +359,131 @@ bench --site your-site install-app sotrama
 bench --site your-site migrate
 ```
 
-Or clone manually:
+Sotrama currently has no Node.js frontend bundle or third-party JavaScript
+dependencies. It deliberately does not ship a `package.json`: Bench runs
+`yarn install` for every app that contains that file, and an empty manifest
+would create an untracked `yarn.lock` in the cloned app repository on install.
+That makes `bench update` reject the app as locally modified. The app's
+Python package metadata and version are defined only in `pyproject.toml` and
+`sotrama/__init__.py`.
+
+For an existing installation, pull the published app revision and run the
+site migration after taking a backup. Do not enable optional Company fields
+until any existing custom fields have been reviewed.
+
+## Upgrade and data safety
+
+- Standard Frappe DocType JSON, hooks, patches, Workspaces and
+  Sidebars are used. Frappe 16.60 registers app modules declared in
+  `modules.txt` during migration; Sotrama does not maintain a parallel module
+  registry or patch the framework's Module Def lifecycle.
+- `hooks.py` is metadata-only. Install and uninstall behavior lives in
+  `setup/install.py` and `setup/uninstall.py`; Company field ownership and
+  opt-in behavior live in `setup/company.py`.
+- Pre-production 1.3.x data cleanup is consolidated into one
+  `post_model_sync` patch, registered as `never_skip_patches` because it includes
+  security-sensitive Driver attachment and DocShare remediation. Fresh installs
+  use `after_install` for default records; Frappe marks upgrade patches complete
+  during a fresh install, so legacy data scans are not run on an empty site.
+  Future patches should be added only for a real one-off data migration and
+  placed in the appropriate pre/post model-sync section.
+- The File privacy marker needed by Driver attachment security is provisioned
+  in `before_install`, before Frappe stamps the app's patches as completed; the
+  upgrade patch creates the same marker on existing sites. This keeps a fresh
+  install independent of a migration that Frappe intentionally skips.
+- `after_migrate` performs only a single-value check for the hidden
+  `Sotrama Settings.setup_initialized` marker. It retries default-master setup
+  only when an interrupted `after_install` did not finish; successful installs
+  and ordinary migrations do not repeat the seed operations.
+- Sotrama child-table rows are exposed through their parent document, not
+  generic list/value APIs. This avoids bypassing Company User Permissions on
+  parent records. Independent DocShare grants for Fleet attachments are also
+  rejected; attachments inherit access from their owning Fleet record, and the
+  migration removes legacy independent File shares. A File controller mixin
+  sets privacy before Frappe's `File.before_insert` stores uploaded bytes, and
+  a `before_validate` hook enforces privacy on updates. Its download check also
+  verifies read access to the exact Fleet parent before Frappe's File-owner
+  shortcut can grant access. Existing public local
+  files are migrated through `File.save(ignore_permissions=True)` so Frappe's
+  storage lifecycle moves the blob and updates duplicate File rows. Remote URLs
+  cannot be made private by site storage, so legacy remote Fleet attachments are
+  detached from the record and their attachment comments are redacted; replace
+  them with private uploads. The File controller also rejects copying or
+  re-uploading identical Fleet attachment content onto unrelated DocTypes, which
+  would otherwise create another permission path to the same private blob.
+  Reusing protected Fleet/Driver file content across Companies is also rejected;
+  child-row attachments resolve their Company through the owning parent record.
+  Moving an existing Fleet attachment between parents requires write access to
+  its original parent; cross-Company moves are reserved for Administrator and
+  System Manager. Reusing an existing private URL also requires current read
+  access to its source parent; a File owner shortcut is not sufficient. Detached
+  Fleet-protected files cannot be reattached by ordinary users.
+  The upgrade migration detaches legacy unrelated duplicate File rows, clears
+  their Attach fields/comments and shares, and makes them Administrator-owned.
+  The same duplicate cleanup runs when a new Fleet attachment reuses existing
+  content, so an unrelated File row cannot keep an alternate access path.
+  A persistent File marker preserves this restriction if a Fleet attachment is
+  later detached from its parent; detached Fleet-derived files remain private
+  and cannot be shared independently. File ownership and legacy DocShare grants
+  do not override the current read/write permission on the exact Fleet parent.
+  Uninstall detaches these files, keeps them private and Administrator-owned,
+  and leaves the persistent privacy marker in place. External/remote URLs are
+  detached and logged for manual replacement because Frappe cannot move an
+  externally hosted resource into private storage.
+- Optional Company fields are created only by explicit opt-in. They are not
+  imported through Custom Field fixtures or synchronized during migration.
+  Saving Sotrama Settings is the only operation that applies the optional
+  Company extension.
+- Public-works designations are added only by explicit opt-in and are stored in
+  HRMS's standard `Designation` DocType. Existing records are never overwritten
+  or deleted, and turning the option off does not remove them.
+- Before install, Sotrama repairs only an unplaced, non-custom `Module Def`
+  whose name is declared by Sotrama. It never changes a module owned by another
+  app or a site-created custom module; Frappe remains responsible for handling
+  custom-module name conflicts.
+- Existing Company fields are never automatically converted between field
+  types. In particular, formatted text such as `2 897 268 000.00 DA` must not
+  be cast directly into a Decimal/Currency database column.
+- Disabling the Company extension hides fields without deleting data.
+- The uninstall hook preserves Company fields by detaching them; it never
+  deletes their metadata or values.
+- Fleet policies and defaults remain in TP Settings; application-wide options
+  belong in Sotrama Settings.
+- Always back up the site before upgrading Frappe apps or Sotrama. Upgrade the
+  framework, ERPNext, HRMS and dependent apps as a compatible set.
+- Uninstalling an app through Frappe removes its app-owned DocTypes and their
+  records. The Company extension is specifically preserved, but Fleet records
+  and Sotrama Settings are app-owned data and must be exported/backed up before
+  uninstalling Sotrama.
+- Do not add an empty `package.json` just to store the app version. If Sotrama
+  later adds a real JavaScript build or runtime dependency, add a deliberate
+  manifest and commit its lockfile so Bench's automatic Yarn install remains
+  reproducible and does not dirty the app checkout; remove the `yarn.lock`
+  ignore entry at that point.
+- Bench enables maintenance mode and pauses the scheduler before pulling app
+  repositories. If an update exits early because a repository is dirty, Bench
+  may not reach its normal cleanup. After resolving the repository issue,
+  inspect `sites/common_site_config.json`; if either flag was left enabled,
+  restore them with `bench set-config -g maintenance_mode 0` and
+  `bench set-config -g pause_scheduler 0`, then run `bench restart`.
+
+## Development checks
+
+From the app repository, run the static checks and packaging build:
 
 ```bash
-cd ~/frappe-bench/apps
-git clone https://github.com/aa790933/sotrama.git
-cd ../
-bench install-app sotrama
-bench --site your-site migrate
+python -m ruff check sotrama
+python -m compileall -q sotrama
+python -m build --wheel
 ```
 
-## Upgrade safety
+Frappe integration tests run inside a separate disposable Bench/site:
 
-- All custom fields are defined in `hooks.py` / `setup.py` as Python code — never in the database
-- `custom_` prefix on Company fields prevents collisions with future ERPNext standard fields
-- `fixtures` in `hooks.py` exports them as JSON for version control and clean reinstall
-- `after_migrate()` re-applies fields after any schema migration
-- `before_uninstall()` removes fields cleanly — no orphaned metadata
-- Daily scheduler checks document expiries, maintenance due dates, and driver license expiries
-- Supports the Frappe/ERPNext 16 major release line; upgrade the framework and app together after taking a site backup
-- Uses standard DocType controller lifecycle methods; no redundant `doc_events` wrappers are registered
+```bash
+bench --site test-site run-tests --app sotrama
+```
+
+Do not run integration tests against a production site.
 
 ## License
 

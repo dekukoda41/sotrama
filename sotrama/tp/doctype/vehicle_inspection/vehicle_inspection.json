@@ -4,6 +4,16 @@
  "module": "TP",
  "fields": [
   {
+   "fieldtype": "Tab Break",
+   "fieldname": "tab_inspection_info",
+   "label": "Inspection Details"
+  },
+  {
+   "fieldtype": "Section Break",
+   "fieldname": "section_inspection",
+   "label": "Inspection Assignment"
+  },
+  {
    "label": "Vehicle",
    "fieldname": "vehicle",
    "fieldtype": "Link",
@@ -11,6 +21,15 @@
    "in_list_view": 1,
    "in_standard_filter": 1,
    "reqd": 1
+  },
+  {
+   "label": "Company",
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "options": "Company",
+   "reqd": 1,
+   "read_only": 1,
+   "in_standard_filter": 1
   },
   {
    "label": "Inspection Type",
@@ -29,11 +48,22 @@
    "reqd": 1
   },
   {
+   "fieldtype": "Column Break",
+   "fieldname": "column_inspection"
+  },
+  {
    "label": "Driver",
    "fieldname": "driver",
    "fieldtype": "Link",
    "options": "Driver",
    "in_list_view": 1
+  },
+  {
+   "label": "Follow-up of Critical Inspection",
+   "fieldname": "follow_up_of",
+   "fieldtype": "Link",
+   "options": "Vehicle Inspection",
+   "description": "Use only when this successful reinspection clears a previously submitted safety-critical inspection."
   },
   {
    "label": "Supervisor",
@@ -47,11 +77,23 @@
    "fieldtype": "Float"
   },
   {
+   "fieldtype": "Tab Break",
+   "fieldname": "tab_inspection_results",
+   "label": "Checklist & Findings"
+  },
+  {
+   "fieldtype": "Section Break",
+   "fieldname": "section_inspection_results",
+   "label": "Inspection Result"
+  },
+  {
    "label": "Overall Status",
    "fieldname": "overall_status",
    "fieldtype": "Select",
    "options": "\nPass\nFail\nConditional Pass",
-   "in_list_view": 1
+   "in_list_view": 1,
+   "read_only": 1,
+   "description": "Calculated automatically: Pass when all checks are Okay, Conditional Pass for non-critical defects, and Fail for safety-critical defects."
   },
   {
    "label": "Total Defects",
@@ -62,16 +104,47 @@
    "in_list_view": 1
   },
   {
+   "fieldtype": "Column Break",
+   "fieldname": "column_inspection_remarks"
+  },
+  {
    "label": "Overall Comments",
    "fieldname": "overall_comments",
    "fieldtype": "Text"
   },
   {
-   "label": "Inspection Items",
+   "label": "Inspection Checklist Items",
    "fieldname": "inspection_items",
    "fieldtype": "Table",
    "options": "Inspection Item",
-   "reqd": 1
+   "reqd": 1,
+   "description": "The standard checklist is added automatically to new inspections. Use Add Custom Check to add a vehicle-specific check."
+  },
+  {
+   "label": "Previous Vehicle Status",
+   "fieldname": "previous_vehicle_status",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "read_only": 1,
+   "no_copy": 1
+  },
+  {
+   "label": "Has Safety-Critical Defect",
+   "fieldname": "has_critical_defect",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "read_only": 1,
+   "no_copy": 1
+  },
+  {
+   "label": "Critical Defect Cleared By",
+   "fieldname": "critical_defect_cleared_by",
+   "fieldtype": "Link",
+   "options": "Vehicle Inspection",
+   "hidden": 1,
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "Successful follow-up inspection that cleared this critical defect."
   }
  ],
  "links": [],
@@ -80,8 +153,7 @@
  "is_submittable": 1,
  "track_changes": 1,
  "naming_rule": "Expression",
- "naming_expression": "INSP-.YYYY.-.####",
- "autoname": "format",
+ "autoname": "INSP-.YYYY.-.####",
  "permissions": [
   {
    "role": "System Manager",
@@ -100,6 +172,13 @@
    "share": 1
   },
   {
+   "role": "System Manager",
+   "permlevel": 1,
+   "read": 1,
+   "write": 1,
+   "create": 1
+  },
+  {
    "role": "Fleet Manager",
    "permlevel": 0,
    "read": 1,
@@ -112,8 +191,14 @@
    "print": 1,
    "email": 1,
    "export": 1,
-   "report": 1,
-   "share": 1
+   "report": 1
+  },
+  {
+   "role": "Fleet Manager",
+   "permlevel": 1,
+   "read": 1,
+   "write": 1,
+   "create": 1
   },
   {
    "role": "Workshop",
@@ -123,7 +208,7 @@
    "create": 1,
    "delete": 0,
    "submit": 1,
-   "cancel": 1,
+   "cancel": 0,
    "amend": 0,
    "print": 1,
    "email": 0,
@@ -131,5 +216,7 @@
    "report": 0,
    "share": 0
   }
- ]
+ ],
+ "icon": "scan",
+ "description": "Vehicle Inspection records for Sotrama public-works fleet operations."
 }

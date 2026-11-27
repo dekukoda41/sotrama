@@ -7,10 +7,20 @@ __pycache__/
 .vscode/
 node_modules/
 dist/
+yarn.lock
 *.log
 env/
+.venv/
+uv.lock
 .env
 *.sqlite3
 *.db
 *.egg-info/
 .pytest_cache/
+
+# Local agent/tooling artifacts — not part of the Frappe app build
+.agents/
+.clinerules/
+graphify-out/
+memory-bank/
+skills-lock.json

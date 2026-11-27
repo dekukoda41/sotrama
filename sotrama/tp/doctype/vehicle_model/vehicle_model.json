@@ -4,6 +4,12 @@
  "module": "TP",
  "fields": [
   {
+   "fieldtype": "Section Break",
+   "fieldname": "section_model",
+   "label": "Model Details",
+   "collapsible": 0
+  },
+  {
    "label": "Vehicle Make",
    "fieldname": "vehicle_make",
    "fieldtype": "Link",
@@ -15,14 +21,20 @@
    "label": "Make",
    "fieldname": "make",
    "fieldtype": "Data",
-   "read_only": 1
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldtype": "Column Break",
+   "fieldname": "column_model"
   },
   {
    "label": "Model Name",
    "fieldname": "model_name",
    "fieldtype": "Data",
    "in_list_view": 1,
-   "reqd": 1
+   "reqd": 1,
+   "description": "Enter the manufacturer's model designation. The internal record ID is generated from the selected make and model name."
   },
   {
    "label": "Description",
@@ -39,12 +51,12 @@
  "links": [],
  "istable": 0,
  "issingle": 0,
- "is_submittable": 1,
+ "is_submittable": 0,
  "track_changes": 1,
- "name_field": "model_name",
- "naming_rule": "Expression",
- "naming_expression": "{model_name}",
- "autoname": "format",
+ "title_field": "model_name",
+ "show_title_field_in_link": 1,
+ "naming_rule": "By script",
+ "autoname": "",
  "permissions": [
   {
    "role": "System Manager",
@@ -53,9 +65,6 @@
    "write": 1,
    "create": 1,
    "delete": 1,
-   "submit": 1,
-   "cancel": 1,
-   "amend": 1,
    "print": 1,
    "email": 1,
    "export": 1,
@@ -69,9 +78,6 @@
    "write": 1,
    "create": 1,
    "delete": 1,
-   "submit": 1,
-   "cancel": 1,
-   "amend": 1,
    "print": 1,
    "email": 1,
    "export": 1,
@@ -82,11 +88,11 @@
    "role": "Workshop",
    "permlevel": 0,
    "read": 1,
-   "write": 1,
-   "create": 1,
+   "write": 0,
+   "create": 0,
    "delete": 0,
-   "submit": 1,
-   "cancel": 1,
+   "submit": 0,
+   "cancel": 0,
    "amend": 0,
    "print": 1,
    "email": 0,
@@ -94,5 +100,7 @@
    "report": 0,
    "share": 0
   }
- ]
+ ],
+ "icon": "car-front",
+ "description": "Vehicle Model records for Sotrama public-works fleet operations."
 }

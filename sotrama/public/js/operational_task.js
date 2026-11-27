@@ -1,60 +1,70 @@
-// Operational Task — client-side logic
+// Operational Task — company-scoped vehicle, driver and supervisor assignment.
 frappe.ui.form.on('Operational Task', {
-    refresh: function(frm) {
-        // Check vehicle status
-        if (frm.doc.vehicle) {
-            frappe.call({
-                method: 'frappe.client.get_value',
-                args: {
-                    doctype: 'Vehicle',
-                    name: frm.doc.vehicle,
-                    fieldname: 'vehicle_status'
-                },
-                callback: function(r) {
-                    if (r.message && r.message.vehicle_status === 'Out of Service') {
-                        frappe.msgprint({
-                            title: __('Warning'),
-                            indicator: 'orange',
-                            message: __('Vehicle ' + frm.doc.vehicle + ' is Out of Service')
-                        });
-                    }
-                }
-            });
-        }
+    setup(frm) {
+        frm.set_query('vehicle', () => ({
+            filters: {
+                docstatus: 1,
+                vehicle_status: ['not in', ['Out of Service', 'Under Repair', 'Retired', 'Scrapped']],
+            },
+        }));
+        frm.set_query('driver', () => {
+            const filters = { status: 'Active', docstatus: 1 };
+            if (frm.doc.company) filters.company = frm.doc.company;
+            return { filters };
+        });
+        frm.set_query('supervisor', () => ({
+            query: 'sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.search_workshop_employees',
+            filters: {
+                company: frm.doc.company || '',
+                target_doctype: 'Operational Task',
+            },
+        }));
     },
 
-    vehicle: function(frm) {
-        if (frm.doc.vehicle) {
-            frappe.call({
-                method: 'frappe.client.get_value',
-                args: {
-                    doctype: 'Vehicle',
-                    name: frm.doc.vehicle,
-                    fieldname: ['primary_driver', 'vehicle_status']
-                },
-                callback: function(r) {
-                    if (r.message) {
-                        if (r.message.primary_driver && !frm.doc.driver) {
-                            frm.set_value('driver', r.message.primary_driver);
-                        }
-                        if (r.message.vehicle_status === 'Out of Service') {
-                            frappe.msgprint(__('Vehicle is Out of Service'));
-                        }
-                    }
+    refresh(frm) {
+        if (!frm.doc.vehicle) return;
+        const vehicle = frm.doc.vehicle;
+        frappe.db.get_value('Vehicle', vehicle, 'vehicle_status')
+            .then(({ message }) => {
+                if (message && frm.doc.vehicle === vehicle && ['Out of Service', 'Under Repair', 'Retired', 'Scrapped'].includes(message.vehicle_status)) {
+                    frappe.msgprint({
+                        title: __('Warning'),
+                        indicator: 'orange',
+                        message: __('Vehicle {0} is {1}.', [frm.doc.vehicle, message.vehicle_status]),
+                    });
                 }
             });
-        }
     },
 
-    start_odometer: function(frm) {
-        if (frm.doc.end_odometer && frm.doc.start_odometer) {
+    vehicle(frm) {
+        if (!frm.doc.vehicle) {
+            return frm.set_value('company', '');
+        }
+        const vehicle = frm.doc.vehicle;
+        return frappe.db.get_value('Vehicle', vehicle, [
+            'primary_driver', 'vehicle_status', 'company',
+        ])
+            .then(({ message }) => {
+                if (!message || frm.doc.vehicle !== vehicle) return;
+                if (message.primary_driver && !frm.doc.driver) {
+                    frm.set_value('driver', message.primary_driver);
+                }
+                if (message.company) frm.set_value('company', message.company);
+                if (['Out of Service', 'Under Repair', 'Retired', 'Scrapped'].includes(message.vehicle_status)) {
+                    frappe.msgprint(__('Vehicle is {0}.', [message.vehicle_status]));
+                }
+            });
+    },
+
+    start_odometer(frm) {
+        if (frm.doc.start_odometer != null && frm.doc.end_odometer != null) {
             frm.set_value('distance_covered', frm.doc.end_odometer - frm.doc.start_odometer);
         }
     },
 
-    end_odometer: function(frm) {
-        if (frm.doc.end_odometer && frm.doc.start_odometer) {
+    end_odometer(frm) {
+        if (frm.doc.start_odometer != null && frm.doc.end_odometer != null) {
             frm.set_value('distance_covered', frm.doc.end_odometer - frm.doc.start_odometer);
         }
-    }
+    },
 });

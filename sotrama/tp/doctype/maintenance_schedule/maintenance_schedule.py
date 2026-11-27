@@ -3,6 +3,12 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import add_months, today
 
+MAINTENANCE_SCHEDULE_STATUS_TRANSITIONS = {
+    "Active": {"Paused", "Completed"},
+    "Paused": {"Active", "Completed"},
+    "Completed": set(),
+}
+
 
 class MaintenanceSchedule(Document):
     """
@@ -12,18 +18,190 @@ class MaintenanceSchedule(Document):
     """
 
     def validate(self):
+        self._set_company_from_vehicle()
+        self._validate_job_type()
         self._validate_interval()
+        self._validate_status_transition()
+        self._validate_system_managed_fields()
+
+    def _validate_job_type(self):
+        if not self.job_type:
+            return
+
+        previous = self.get_doc_before_save()
+        job_type_changed = (
+            not previous
+            or getattr(self, "_action", None) == "submit"
+            or previous.job_type != self.job_type
+        )
+        if not job_type_changed or frappe.flags.get(
+            "in_maintenance_schedule_generation"
+        ):
+            return
+
+        from sotrama.tp.validation import validate_linked_document_read_permission
+
+        validate_linked_document_read_permission("Maintenance Job Type", self.job_type)
+        if not frappe.db.get_value("Maintenance Job Type", self.job_type, "active"):
+            frappe.throw(_("Select an active Maintenance Job Type."))
+
+    def _validate_status_transition(self):
+        previous = self.get_doc_before_save()
+        if self.docstatus == 0 and self.status != "Active":
+            frappe.throw(_("A new Maintenance Schedule must start in Active status."))
+        status_changed = not previous or previous.status != self.status
+        if not status_changed:
+            return
+        if (
+            previous
+            and previous.docstatus == 1
+            and self.status
+            not in MAINTENANCE_SCHEDULE_STATUS_TRANSITIONS.get(previous.status, set())
+        ):
+            frappe.throw(
+                _("Maintenance Schedule cannot change from {0} to {1}.").format(
+                    previous.status, self.status
+                )
+            )
+        if (
+            self.status == "Completed"
+            and self.schedule_type == "Mileage"
+            and not self.last_service_odometer
+        ):
+            frappe.throw(
+                _(
+                    "Record the last service odometer before completing a mileage-based schedule."
+                )
+            )
+
+    def _validate_system_managed_fields(self):
+        previous = self.get_doc_before_save()
+        fields = ("next_schedule", "last_service_job_card")
+        if not previous:
+            if any(
+                self.get(fieldname) for fieldname in fields
+            ) and not frappe.flags.get("in_maintenance_schedule_generation"):
+                frappe.throw(
+                    _(
+                        "Next Schedule and Last Service Job Card are managed by the maintenance workflow."
+                    )
+                )
+            return
+        for fieldname in fields:
+            if self.get(fieldname) != previous.get(fieldname):
+                frappe.throw(
+                    _("{0} is managed by the maintenance workflow.").format(
+                        frappe.get_meta(self.doctype).get_label(fieldname)
+                    )
+                )
+
+    def on_update_after_submit(self):
+        previous = self.get_doc_before_save()
+        if not previous or previous.status == self.status:
+            return
+        if self.status == "Completed":
+            self._create_next_occurrence()
+        self.add_comment(
+            "Edit",
+            _("Maintenance Schedule status changed from {0} to {1}.").format(
+                previous.status, self.status
+            ),
+        )
+
+    def _set_company_from_vehicle(self):
+        if not self.vehicle:
+            return
+
+        from sotrama.tp.validation import validate_submitted_vehicle
+
+        vehicle = validate_submitted_vehicle(self.vehicle)
+        vehicle_company = vehicle.company
+        if vehicle_company:
+            from sotrama.tp.settings import validate_company_access
+
+            validate_company_access(vehicle_company, "Vehicle")
+        if self.company and vehicle_company and self.company != vehicle_company:
+            frappe.throw(
+                _("Maintenance Schedule Company must match the Vehicle Company.")
+            )
+        self.company = vehicle_company or self.company
+        from sotrama.tp.settings import validate_company_access
+
+        validate_company_access(self.company, "Maintenance Schedule")
 
     def on_submit(self):
         self._create_next_occurrence()
 
+    def on_cancel(self):
+        """Release predecessor links when a generated successor is cancelled."""
+        predecessors = frappe.get_all(
+            "Maintenance Schedule",
+            filters={"next_schedule": self.name},
+            pluck="name",
+            limit_page_length=0,
+        )
+        for predecessor in predecessors:
+            predecessor_doc = frappe.get_doc("Maintenance Schedule", predecessor)
+            if predecessor_doc.company != self.company:
+                frappe.throw(
+                    _("Cannot update a predecessor schedule from another Company."),
+                    frappe.PermissionError,
+                )
+            from sotrama.tp.settings import validate_company_access
+
+            validate_company_access(predecessor_doc.company, "Maintenance Schedule")
+            if not frappe.has_permission(
+                "Maintenance Schedule", "write", doc=predecessor_doc
+            ):
+                frappe.throw(
+                    _("You do not have permission to update the predecessor Maintenance Schedule."),
+                    frappe.PermissionError,
+                )
+            frappe.db.set_value(
+                "Maintenance Schedule", predecessor, "next_schedule", None
+            )
+            predecessor_doc.add_comment(
+                "Info",
+                _("Generated successor Maintenance Schedule {0} was cancelled.").format(
+                    self.name
+                ),
+            )
+
+    def before_cancel(self):
+        """Do not orphan an active successor generated by this schedule."""
+        if not self.next_schedule:
+            return
+
+        from sotrama.tp.validation import validate_linked_document_read_permission
+
+        validate_linked_document_read_permission(
+            "Maintenance Schedule", self.next_schedule
+        )
+        successor_docstatus = frappe.db.get_value(
+            "Maintenance Schedule", self.next_schedule, "docstatus"
+        )
+        if successor_docstatus == 1:
+            frappe.throw(
+                _(
+                    "Cancel the active successor Maintenance Schedule before cancelling this completed schedule."
+                )
+            )
+
     def _validate_interval(self):
         if not self.schedule_type:
             frappe.throw(_("Schedule Type is required"))
-        if self.schedule_type == "Calendar" and not self.interval_months:
-            frappe.throw(_("Interval Months is required for Calendar schedule"))
-        if self.schedule_type == "Mileage" and not self.interval_km:
-            frappe.throw(_("Interval KM is required for Mileage schedule"))
+        if self.schedule_type == "Calendar" and (
+            self.interval_months is None or self.interval_months <= 0
+        ):
+            frappe.throw(
+                _("Interval Months must be greater than zero for a Calendar schedule.")
+            )
+        if self.schedule_type == "Mileage" and (
+            self.interval_km is None or self.interval_km <= 0
+        ):
+            frappe.throw(
+                _("Interval KM must be greater than zero for a Mileage schedule.")
+            )
 
     def _create_next_occurrence(self):
         """Generate the next Maintenance Schedule based on interval."""
@@ -34,20 +212,86 @@ class MaintenanceSchedule(Document):
         if self.status != "Completed":
             return
 
+        if self.next_schedule and frappe.db.exists(
+            "Maintenance Schedule", self.next_schedule
+        ):
+            return
+
         next_sched = frappe.new_doc("Maintenance Schedule")
         next_sched.vehicle = self.vehicle
+        next_sched.company = self.company
         next_sched.schedule_type = self.schedule_type
         next_sched.job_type = self.job_type
         next_sched.interval_months = self.interval_months
         next_sched.interval_km = self.interval_km
         next_sched.last_service_date = self.last_service_date
         next_sched.last_service_odometer = self.last_service_odometer
+        next_sched.last_service_job_card = self.last_service_job_card
 
         if self.schedule_type == "Calendar" and self.interval_months:
             next_sched.next_due_date = add_months(
                 self.last_service_date or today(), self.interval_months
             )
-        elif self.schedule_type == "Mileage" and self.interval_km and self.last_service_odometer:
+        elif (
+            self.schedule_type == "Mileage"
+            and self.interval_km
+            and self.last_service_odometer is not None
+        ):
             next_sched.next_due_odometer = self.last_service_odometer + self.interval_km
 
-        next_sched.insert(ignore_permissions=True)
+        next_sched.status = "Active"
+        previous_generation_flag = frappe.flags.get(
+            "in_maintenance_schedule_generation"
+        )
+        frappe.flags.in_maintenance_schedule_generation = True
+        try:
+            next_sched.insert(ignore_permissions=True)
+            next_sched.submit()
+        finally:
+            frappe.flags.in_maintenance_schedule_generation = previous_generation_flag
+        self.db_set("next_schedule", next_sched.name)
+
+
+@frappe.whitelist(methods=["POST"])
+def update_maintenance_schedule_status(name, status):
+    """Apply a permission-checked operational transition to a submitted plan."""
+    schedule = frappe.get_doc("Maintenance Schedule", name)
+    schedule.check_permission("write")
+    if schedule.docstatus != 1:
+        frappe.throw(
+            _("Only submitted Maintenance Schedules can change operational status.")
+        )
+    if schedule.status == status:
+        return {"status": status, "next_schedule": schedule.next_schedule}
+    if status not in MAINTENANCE_SCHEDULE_STATUS_TRANSITIONS.get(
+        schedule.status, set()
+    ):
+        frappe.throw(
+            _("Maintenance Schedule cannot change from {0} to {1}.").format(
+                schedule.status, status
+            )
+        )
+
+    previous_status = schedule.status
+    if (
+        status == "Completed"
+        and schedule.schedule_type == "Mileage"
+        and not schedule.last_service_odometer
+    ):
+        frappe.throw(
+            _(
+                "Record the last service odometer before completing a mileage-based schedule."
+            )
+        )
+
+    schedule.db_set("status", status)
+    schedule.reload()
+    if status == "Completed":
+        schedule._create_next_occurrence()
+    schedule.add_comment(
+        "Edit",
+        _("Maintenance Schedule status changed from {0} to {1}.").format(
+            previous_status, status
+        ),
+    )
+    return {"status": status, "next_schedule": schedule.next_schedule}

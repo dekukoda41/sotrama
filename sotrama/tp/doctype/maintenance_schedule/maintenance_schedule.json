@@ -4,6 +4,16 @@
  "module": "TP",
  "fields": [
   {
+   "fieldtype": "Tab Break",
+   "fieldname": "tab_schedule",
+   "label": "Maintenance Plan"
+  },
+  {
+   "fieldtype": "Section Break",
+   "fieldname": "section_plan",
+   "label": "Schedule Configuration"
+  },
+  {
    "label": "Vehicle",
    "fieldname": "vehicle",
    "fieldtype": "Link",
@@ -11,6 +21,15 @@
    "in_list_view": 1,
    "in_standard_filter": 1,
    "reqd": 1
+  },
+  {
+   "label": "Company",
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "options": "Company",
+   "reqd": 1,
+   "read_only": 1,
+   "in_standard_filter": 1
   },
   {
    "label": "Schedule Type",
@@ -30,16 +49,33 @@
    "reqd": 1
   },
   {
+   "fieldtype": "Column Break",
+   "fieldname": "column_intervals"
+  },
+  {
    "label": "Interval Months",
    "fieldname": "interval_months",
    "fieldtype": "Int",
-   "depends_on": "eval:doc.schedule_type == 'Calendar'"
+   "depends_on": "eval:doc.schedule_type == 'Calendar'",
+   "mandatory_depends_on": "eval:doc.schedule_type == 'Calendar'"
   },
   {
    "label": "Interval KM",
    "fieldname": "interval_km",
    "fieldtype": "Float",
-   "depends_on": "eval:doc.schedule_type == 'Mileage'"
+   "depends_on": "eval:doc.schedule_type == 'Mileage'",
+   "mandatory_depends_on": "eval:doc.schedule_type == 'Mileage'"
+  },
+  {
+   "fieldtype": "Tab Break",
+   "fieldname": "tab_service_tracking",
+   "label": "Service Tracking"
+  },
+  {
+   "fieldtype": "Section Break",
+   "fieldname": "section_last_service",
+   "label": "Last and Next Service",
+   "collapsible": 1
   },
   {
    "label": "Last Service Date",
@@ -51,6 +87,18 @@
    "label": "Last Service Odometer",
    "fieldname": "last_service_odometer",
    "fieldtype": "Float"
+  },
+  {
+   "label": "Last Service Job Card",
+   "fieldname": "last_service_job_card",
+   "fieldtype": "Link",
+   "options": "Maintenance Job Card",
+   "read_only": 1,
+   "description": "Last submitted job card applied to this maintenance plan."
+  },
+  {
+   "fieldtype": "Column Break",
+   "fieldname": "column_next_service"
   },
   {
    "label": "Next Due Date",
@@ -72,7 +120,24 @@
    "options": "\nActive\nPaused\nCompleted",
    "default": "Active",
    "in_list_view": 1,
-   "in_standard_filter": 1
+   "in_standard_filter": 1,
+   "read_only": 1
+  },
+  {
+   "label": "Next Schedule",
+   "fieldname": "next_schedule",
+   "fieldtype": "Link",
+   "options": "Maintenance Schedule",
+   "hidden": 1,
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "Next recurring schedule generated when this plan is completed."
+  },
+  {
+   "fieldtype": "Section Break",
+   "fieldname": "section_notes",
+   "label": "Notes",
+   "collapsible": 1
   },
   {
    "label": "Notes",
@@ -86,8 +151,7 @@
  "is_submittable": 1,
  "track_changes": 1,
  "naming_rule": "Expression",
- "naming_expression": "SCH-.YYYY.-.####",
- "autoname": "format",
+ "autoname": "SCH-.YYYY.-.####",
  "permissions": [
   {
    "role": "System Manager",
@@ -118,18 +182,17 @@
    "print": 1,
    "email": 1,
    "export": 1,
-   "report": 1,
-   "share": 1
+   "report": 1
   },
   {
    "role": "Workshop",
    "permlevel": 0,
    "read": 1,
-   "write": 1,
-   "create": 1,
+   "write": 0,
+   "create": 0,
    "delete": 0,
-   "submit": 1,
-   "cancel": 1,
+   "submit": 0,
+   "cancel": 0,
    "amend": 0,
    "print": 1,
    "email": 0,
@@ -137,5 +200,7 @@
    "report": 0,
    "share": 0
   }
- ]
+ ],
+ "icon": "calendar-clock",
+ "description": "Maintenance Schedule records for Sotrama public-works fleet operations."
 }
