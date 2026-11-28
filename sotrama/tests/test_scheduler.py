@@ -404,7 +404,7 @@ class TestFleetSchedulerPrivacy(unittest.TestCase):
                 return_value=allocated_to,
             ),
             patch("frappe.db.get_value", return_value="fr"),
-            patch("frappe.db.set_value") as set_value,
+            patch("frappe.db.set_value"),
             patch("frappe.new_doc") as new_doc,
             patch.object(drivers_module, "_", side_effect=fake_translate),
         ):
@@ -456,7 +456,7 @@ class TestFleetSchedulerPrivacy(unittest.TestCase):
                 return_value=allocated_to,
             ),
             patch("frappe.db.get_value", return_value="fr"),
-            patch("frappe.db.set_value") as set_value,
+            patch("frappe.db.set_value"),
             patch("frappe.new_doc") as new_doc,
             patch.object(maintenance_module, "_", side_effect=fake_translate),
         ):
@@ -604,7 +604,7 @@ class TestFleetSchedulerPrivacy(unittest.TestCase):
                 "sotrama.tp.scheduler.maintenance._user_for_role",
                 return_value="fleet@example.invalid",
             ),
-            patch("frappe.db.get_value") as get_value,
+            patch("frappe.db.get_value", return_value="en") as get_value,
             patch("frappe.db.set_value") as set_value,
             patch("frappe.new_doc", return_value=created_todo),
         ):
@@ -618,7 +618,7 @@ class TestFleetSchedulerPrivacy(unittest.TestCase):
             {"reference_type": "Maintenance Schedule"},
         )
         self.assertTrue(get_all.call_args_list[2].kwargs["or_filters"])
-        get_value.assert_not_called()
+        self.assertEqual(get_value.call_count, 2)
         set_value.assert_called_once()
         self.assertEqual(set_value.call_args.args[:2], ("ToDo", "TODO-DATE"))
         self.assertIn(
@@ -690,6 +690,7 @@ class TestFleetSchedulerPrivacy(unittest.TestCase):
                 "frappe.get_all",
                 side_effect=[schedules, vehicles, todos],
             ),
+            patch("frappe.db.get_value", return_value="en"),
             patch("frappe.db.set_value") as set_value,
             patch("frappe.new_doc") as new_doc,
         ):

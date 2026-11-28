@@ -66,7 +66,26 @@ def check_maintenance_due():
     retained_todo_names = set()
     for sched in schedules:
         vehicle_row = vehicles_by_name.get(sched.vehicle)
-        due_reasons = []
+        due_reasons = []  # (kind, value) pairs; translated after language lookup
+
+        if sched.next_due_date and getdate(sched.next_due_date) <= due_date_threshold:
+            due_reasons.append(("date", sched.next_due_date))
+
+        if sched.next_due_odometer:
+            current_odometer = odometers_by_vehicle.get(sched.vehicle, 0)
+            if current_odometer >= sched.next_due_odometer:
+                due_reasons.append(
+                    ("odometer", f"{current_odometer} km (target {sched.next_due_odometer} km)")
+                )
+
+        if (
+            not due_reasons
+            or not vehicle_row
+            or vehicle_row.docstatus != 1
+            or vehicle_row.vehicle_status in ("Retired", "Scrapped")
+        ):
+            continue
+
         allocated_to = _user_for_role(
             "Fleet Manager",
             "Maintenance Schedule",
@@ -80,25 +99,13 @@ def check_maintenance_due():
             if allocated_to
             else None,
         )
-        if sched.next_due_date and getdate(sched.next_due_date) <= due_date_threshold:
-            due_reasons.append(_("due date {0}", lang=language).format(sched.next_due_date))
+        due_reasons = [
+            _("due date {0}", lang=language).format(value)
+            if kind == "date"
+            else _("odometer {0}", lang=language).format(value)
+            for kind, value in due_reasons
+        ]
 
-        if sched.next_due_odometer:
-            current_odometer = odometers_by_vehicle.get(sched.vehicle, 0)
-            if current_odometer >= sched.next_due_odometer:
-                due_reasons.append(
-                    _("odometer {0} km (target {1} km)", lang=language).format(
-                        current_odometer, sched.next_due_odometer
-                    )
-                )
-
-        if (
-            not due_reasons
-            or not vehicle_row
-            or vehicle_row.docstatus != 1
-            or vehicle_row.vehicle_status in ("Retired", "Scrapped")
-        ):
-            continue
         schedule_todos = todos_by_schedule.get(sched.name, [])
         alert_signature = _maintenance_alert_signature(sched)
         closed_existing = next(
