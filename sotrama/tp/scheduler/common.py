@@ -20,7 +20,7 @@ def _log_administrator_fallback(role_name, doctype, docname, reason):
             ),
             title="SOTRAMA Administrator Fallback",
         )
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 — logging must never break the scheduler fallback
         # Logging must never prevent a scheduler alert from being assigned.
         pass
 
