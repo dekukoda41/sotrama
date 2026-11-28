@@ -2357,6 +2357,9 @@ msgstr "Le conducteur {0} n'existe pas."
 msgid "Driver {0} has an expired {1} ({2})."
 msgstr "Le conducteur {0} possède un document expiré : {1} ({2})."
 
+msgid "Driver {0} has an expired {1}."
+msgstr "Le conducteur {0} possède un document expiré : {1}."
+
 msgid "Driver {0} license expires on {1}."
 msgstr "Le permis du conducteur {0} expire le {1}."
 
