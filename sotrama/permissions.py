@@ -791,7 +791,7 @@ def file_has_permission(doc, user=None, ptype=None, debug=False):
     if not doc:
         return True
     if is_driver_private_attachment(doc):
-        return can_access_driver_private_attachment(doc, user, ptype)
+        return can_access_driver_private_attachment(doc, user, ptype=ptype)
     if is_company_scoped_fleet_attachment(doc):
         if not is_direct_company_scoped_fleet_attachment(doc):
             return (user or frappe.session.user) == "Administrator"
@@ -1221,13 +1221,18 @@ def get_docinfo_with_driver_attachment_filter(*args, **kwargs):
     """Filter protected attachments when the client requests docinfo separately."""
     doc = kwargs.get("doc", args[0] if args else None)
     doctype = kwargs.get("doctype")
-    if not doctype and doc:
-        doctype = getattr(doc, "doctype", None)
-        if not doctype and isinstance(doc, dict):
-            doctype = doc.get("doctype")
-    name = kwargs.get("name") or (doc.get("name") if isinstance(doc, dict) else None)
+    if not doctype:
+        if isinstance(doc, str):
+            doctype = doc
+        elif doc:
+            doctype = getattr(doc, "doctype", None)
+            if not doctype and isinstance(doc, dict):
+                doctype = doc.get("doctype")
+    name = kwargs.get("name")
+    if not name and len(args) > 1:
+        name = args[1]
     if not name and doc:
-        name = getattr(doc, "name", None)
+        name = doc.get("name") if isinstance(doc, dict) else getattr(doc, "name", None)
 
     if doctype in PRIVATE_DRIVER_ATTACHMENT_DOCTYPES:
         if not name:

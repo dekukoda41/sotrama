@@ -1077,7 +1077,7 @@ class TestMaintenanceJobCardAuthorization(unittest.TestCase):
 
         with (
             patch(
-                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.validate_linked_document_read_permission"
+                "sotrama.tp.validation.validate_linked_document_read_permission"
             ),
             patch(
                 "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.frappe.db.get_value",
@@ -1096,7 +1096,7 @@ class TestMaintenanceJobCardAuthorization(unittest.TestCase):
 
         with (
             patch(
-                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.validate_linked_document_read_permission"
+                "sotrama.tp.validation.validate_linked_document_read_permission"
             ),
             patch(
                 "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.frappe.db.get_value",
@@ -1114,7 +1114,7 @@ class TestMaintenanceJobCardAuthorization(unittest.TestCase):
 
         with (
             patch(
-                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.validate_linked_document_read_permission"
+                "sotrama.tp.validation.validate_linked_document_read_permission"
             ),
             patch(
                 "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.frappe.db.get_value",
@@ -1133,7 +1133,7 @@ class TestMaintenanceJobCardAuthorization(unittest.TestCase):
 
         with (
             patch(
-                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.validate_linked_document_read_permission"
+                "sotrama.tp.validation.validate_linked_document_read_permission"
             ) as perm_check,
         ):
             job_card._validate_driver_at_time()
@@ -1162,7 +1162,7 @@ class TestMaintenanceJobCardAuthorization(unittest.TestCase):
                 return_value=vehicle_doc,
             ),
             patch(
-                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.validate_linked_document_read_permission"
+                "sotrama.tp.validation.validate_linked_document_read_permission"
             ),
             patch(
                 "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.frappe.db.get_value",
@@ -1265,7 +1265,7 @@ class TestMaintenanceJobCardAuthorization(unittest.TestCase):
 
         with (
             patch(
-                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.validate_linked_document_read_permission"
+                "sotrama.tp.validation.validate_linked_document_read_permission"
             ),
             patch(
                 "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.frappe.db.get_value",
@@ -1289,7 +1289,7 @@ class TestMaintenanceJobCardAuthorization(unittest.TestCase):
 
         with (
             patch(
-                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.validate_linked_document_read_permission"
+                "sotrama.tp.validation.validate_linked_document_read_permission"
             ),
             patch(
                 "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.frappe.db.get_value",
@@ -1310,7 +1310,7 @@ class TestMaintenanceJobCardAuthorization(unittest.TestCase):
 
         with (
             patch(
-                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.validate_linked_document_read_permission"
+                "sotrama.tp.validation.validate_linked_document_read_permission"
             ),
             patch(
                 "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.frappe.db.get_value",

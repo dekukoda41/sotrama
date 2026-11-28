@@ -1462,7 +1462,7 @@ class TestSchedulerAuthorizationAndFallback(unittest.TestCase):
 
         with (
             patch("sotrama.tp.scheduler.drivers.get_tp_setting", return_value=60),
-            patch("frappe.get_all", side_effect=[[], []]),
+            patch("frappe.get_all", side_effect=[[], [], []]),
             patch("frappe.new_doc") as new_doc,
         ):
             check_driver_license_expiry()
@@ -1492,7 +1492,7 @@ class TestSchedulerAuthorizationAndFallback(unittest.TestCase):
             patch("sotrama.tp.scheduler.drivers.get_tp_setting", return_value=60),
             patch(
                 "frappe.get_all",
-                side_effect=[[], [active_driver, inactive_driver], []],
+                side_effect=[[], [active_driver, inactive_driver], [], ["fleet@example.invalid"]],
             ),
             patch("frappe.db.exists", return_value=False),
             patch("frappe.new_doc") as new_doc,

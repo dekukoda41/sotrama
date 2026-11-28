@@ -3569,6 +3569,7 @@ class TestDriverPrivateAttachmentSecurity(unittest.TestCase):
             sotrama_private_driver_attachment=0,
             is_new=lambda: True,
             get_doc_before_save=lambda: None,
+            handle_is_private_changed=lambda: None,
         )
         with (
             patch(
