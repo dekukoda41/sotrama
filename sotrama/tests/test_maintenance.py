@@ -194,17 +194,20 @@ class TestMaintenanceJobCard(unittest.TestCase):
                 "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card._validate_workshop_employee_lookup_access"
             ),
             patch(
-                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.frappe.db.get_value",
-                return_value=None,
-            ) as employee_get_value,
+                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.frappe.get_all",
+                return_value=[],
+            ) as employee_get_all,
             self.assertRaises(frappe.ValidationError),
         ):
             job_card._validate_labour_lines()
-        employee_get_value.assert_called_once_with(
+        employee_get_all.assert_called_once_with(
             "Employee",
-            {"name": "EMP-TEST-001", "company": "SOTRAMA-TEST-COMPANY"},
-            ["company", "employee_name"],
-            as_dict=True,
+            filters={
+                "name": ["in", ["EMP-TEST-001"]],
+                "company": "SOTRAMA-TEST-COMPANY",
+            },
+            fields=["name", "company", "employee_name"],
+            limit_page_length=0,
         )
 
         with (
@@ -212,10 +215,14 @@ class TestMaintenanceJobCard(unittest.TestCase):
                 "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card._validate_workshop_employee_lookup_access"
             ),
             patch(
-                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.frappe.db.get_value",
-                return_value=frappe._dict(
-                    company="SOTRAMA-TEST-COMPANY", employee_name="Test Mechanic"
-                ),
+                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.frappe.get_all",
+                return_value=[
+                    frappe._dict(
+                        name="EMP-TEST-001",
+                        company="SOTRAMA-TEST-COMPANY",
+                        employee_name="Test Mechanic",
+                    )
+                ],
             ),
         ):
             job_card._validate_labour_lines()
@@ -238,8 +245,8 @@ class TestMaintenanceJobCard(unittest.TestCase):
         with (
             patch("sotrama.tp.validation.validate_linked_document_read_permission"),
             patch(
-                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.frappe.db.get_value",
-                return_value=frappe._dict(is_stock_item=1, disabled=1),
+                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.frappe.get_all",
+                return_value=[frappe._dict(is_stock_item=1, disabled=1)],
             ),
             self.assertRaises(frappe.ValidationError),
         ):

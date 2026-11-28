@@ -337,6 +337,25 @@ class MaintenanceJobCard(Document):
 
     def _validate_labour_lines(self):
         """Keep workshop labour linked to Employees in the work order's Company."""
+        mechanic_names = [
+            row.mechanic for row in self.labour_lines or [] if row.mechanic
+        ]
+        employees_by_name = {}
+        if mechanic_names:
+            _validate_workshop_employee_lookup_access(
+                self.company, "Maintenance Job Card"
+            )
+            employees = frappe.get_all(
+                "Employee",
+                filters={
+                    "name": ["in", mechanic_names],
+                    "company": self.company,
+                },
+                fields=["name", "company", "employee_name"],
+                limit_page_length=0,
+            )
+            employees_by_name = {employee.name: employee for employee in employees}
+
         for row in self.labour_lines or []:
             if row.hours is not None and row.hours <= 0:
                 frappe.throw(
@@ -351,16 +370,7 @@ class MaintenanceJobCard(Document):
             if not row.mechanic:
                 row.mechanic_name = None
                 continue
-            _validate_workshop_employee_lookup_access(
-                self.company, "Maintenance Job Card"
-            )
-
-            employee = frappe.db.get_value(
-                "Employee",
-                {"name": row.mechanic, "company": self.company},
-                ["company", "employee_name"],
-                as_dict=True,
-            )
+            employee = employees_by_name.get(row.mechanic)
             if not employee:
                 frappe.throw(
                     _(
@@ -425,6 +435,22 @@ class MaintenanceJobCard(Document):
         self.total_cost = total_parts + total_labour + total_other
 
     def _check_parts_available(self):
+        items_by_name = {}
+        if self.parts_used:
+            from sotrama.tp.validation import validate_linked_document_read_permission
+
+            item_names = [row.item for row in self.parts_used if row.item]
+            if item_names:
+                for item_name in item_names:
+                    validate_linked_document_read_permission("Item", item_name)
+                items = frappe.get_all(
+                    "Item",
+                    filters={"name": ["in", item_names]},
+                    fields=["name", "is_stock_item", "disabled"],
+                    limit_page_length=0,
+                )
+                items_by_name = {item.name: item for item in items}
+
         for row in self.parts_used or []:
             if not row.item:
                 frappe.throw(
@@ -432,12 +458,7 @@ class MaintenanceJobCard(Document):
                         row.idx
                     )
                 )
-            from sotrama.tp.validation import validate_linked_document_read_permission
-
-            validate_linked_document_read_permission("Item", row.item)
-            item = frappe.db.get_value(
-                "Item", row.item, ["is_stock_item", "disabled"], as_dict=True
-            )
+            item = items_by_name.get(row.item)
             if not item:
                 frappe.throw(
                     _("Select a valid Item for maintenance part row {0}.").format(
