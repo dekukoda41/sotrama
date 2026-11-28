@@ -6,20 +6,23 @@ import frappe
 def _log_administrator_fallback(role_name, doctype, docname, reason):
     """Log Administrator fallback so misrouted scheduler alerts are visible.
 
-    Call sites: sotrama/tp/scheduler/drivers.py (Fleet Manager / HR Manager on
-    Driver), sotrama/tp/scheduler/maintenance.py (Fleet Manager on Maintenance
-    Schedule), sotrama/tp/scheduler/documents.py (Fleet Manager on Vehicle).
-    Reads: Has Role (role, parenttype, parent), User (name, enabled, language),
-    and the target doctype document for permission checks. Writes: Error Log
-    doctype via frappe.log_error.
+    Logging is best-effort: it must never break the scheduler's fallback to
+    Administrator. Call sites: sotrama/tp/scheduler/drivers.py (Fleet Manager /
+    HR Manager on Driver), sotrama/tp/scheduler/maintenance.py (Fleet Manager on
+    Maintenance Schedule), sotrama/tp/scheduler/documents.py (Fleet Manager on
+    Vehicle). Writes: Error Log doctype via frappe.log_error.
     """
-    frappe.log_error(
-        message=(
-            f"Scheduler role '{role_name}' for {doctype} {docname!r} "
-            f"fell back to Administrator: {reason}"
-        ),
-        title="SOTRAMA Administrator Fallback",
-    )
+    try:
+        frappe.log_error(
+            message=(
+                f"Scheduler role '{role_name}' for {doctype} {docname!r} "
+                f"fell back to Administrator: {reason}"
+            ),
+            title="SOTRAMA Administrator Fallback",
+        )
+    except Exception:
+        # Logging must never prevent a scheduler alert from being assigned.
+        pass
 
 
 def _user_for_role(
