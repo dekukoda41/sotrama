@@ -27,7 +27,7 @@ class TestValidateCompanyAccessIntegration(unittest.TestCase):
         frappe.set_user(self.admin_user)
         for doctype, name in reversed(self.created_docs):
             if frappe.db.exists(doctype, name):
-                frappe.delete_doc(doctype, name, ignore_on_trash=True)
+                frappe.db.delete(doctype, {"name": name})
         self.created_docs = []
 
     def _create_fleet_user(self):
@@ -141,7 +141,7 @@ class TestCompanyUserPermissionApplicableForIntegration(unittest.TestCase):
         frappe.set_user(self.admin_user)
         for doctype, name in reversed(self.created_docs):
             if frappe.db.exists(doctype, name):
-                frappe.delete_doc(doctype, name, ignore_on_trash=True)
+                frappe.db.delete(doctype, {"name": name})
         self.created_docs = []
 
     def _create_driver_user(self):
