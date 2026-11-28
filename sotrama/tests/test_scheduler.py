@@ -375,6 +375,100 @@ class TestFleetSchedulerPrivacy(unittest.TestCase):
 
         new_doc.assert_not_called()
 
+    def test_driver_license_expiry_scheduler_passes_assignee_language_to_translations(self):
+        import sotrama.tp.scheduler.drivers as drivers_module
+        from sotrama.tp.scheduler import check_driver_license_expiry
+
+        driver = frappe._dict(
+            name="DRV-I18N-001",
+            driver_name="I18n Driver",
+            license_expiry=add_days(today(), 5),
+            safety_training_expiry=None,
+        )
+        allocated_to = "hr@example.invalid"
+        captured_langs = []
+
+        def fake_translate(message, *args, **kwargs):
+            captured_langs.append(kwargs.get("lang"))
+            return message
+
+        with (
+            patch("sotrama.tp.scheduler.drivers.get_tp_setting", return_value=60),
+            patch(
+                "frappe.get_all",
+                side_effect=[[], [driver], [], []],
+            ),
+            patch("frappe.db.exists", return_value=True),
+            patch(
+                "sotrama.tp.scheduler.drivers._user_for_role",
+                return_value=allocated_to,
+            ),
+            patch("frappe.db.get_value", return_value="fr"),
+            patch("frappe.db.set_value") as set_value,
+            patch("frappe.new_doc") as new_doc,
+            patch.object(drivers_module, "_", side_effect=fake_translate),
+        ):
+            check_driver_license_expiry()
+
+        new_doc.assert_called_once_with("ToDo")
+        created_todo = new_doc.return_value
+        created_todo.insert.assert_called_once_with(ignore_permissions=True)
+        self.assertEqual(created_todo.allocated_to, allocated_to)
+        self.assertTrue(captured_langs, "No _() calls were intercepted")
+        self.assertTrue(all(lang == "fr" for lang in captured_langs))
+
+    def test_maintenance_due_scheduler_passes_assignee_language_to_translations(self):
+        import sotrama.tp.scheduler.maintenance as maintenance_module
+        from sotrama.tp.scheduler import check_maintenance_due
+
+        schedules = [
+            frappe._dict(
+                name="SCH-I18N",
+                vehicle="VEH-I18N",
+                next_due_date=add_days(today(), 2),
+                next_due_odometer=None,
+                job_type="Oil Change",
+            ),
+        ]
+        vehicles = [
+            frappe._dict(
+                name="VEH-I18N",
+                current_odometer=450,
+                docstatus=1,
+                vehicle_status="Active",
+            ),
+        ]
+        allocated_to = "fleet@example.invalid"
+        captured_langs = []
+
+        def fake_translate(message, *args, **kwargs):
+            captured_langs.append(kwargs.get("lang"))
+            return message
+
+        with (
+            patch("sotrama.tp.scheduler.maintenance.get_tp_setting", return_value=14),
+            patch(
+                "frappe.get_all",
+                side_effect=[schedules, vehicles, []],
+            ),
+            patch(
+                "sotrama.tp.scheduler.maintenance._user_for_role",
+                return_value=allocated_to,
+            ),
+            patch("frappe.db.get_value", return_value="fr"),
+            patch("frappe.db.set_value") as set_value,
+            patch("frappe.new_doc") as new_doc,
+            patch.object(maintenance_module, "_", side_effect=fake_translate),
+        ):
+            check_maintenance_due()
+
+        new_doc.assert_called_once_with("ToDo")
+        created_todo = new_doc.return_value
+        created_todo.insert.assert_called_once_with(ignore_permissions=True)
+        self.assertEqual(created_todo.allocated_to, allocated_to)
+        self.assertTrue(captured_langs, "No _() calls were intercepted")
+        self.assertTrue(all(lang == "fr" for lang in captured_langs))
+
     def test_role_assignment_requires_read_permission_for_the_exact_document(self):
         from sotrama.tp.scheduler import _user_for_role
 

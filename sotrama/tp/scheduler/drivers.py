@@ -119,20 +119,29 @@ def check_driver_license_expiry():
         todos_by_driver.setdefault(todo.reference_name, []).append(todo)
 
     role_users_cache = {}
+    user_languages = {}
     retained_todo_names = set()
 
     for d in drivers:
         if d.license_expiry and getdate(d.license_expiry) <= getdate(threshold):
-            title = _("Driver License Expiring: {0}").format(d["driver_name"])
-            description = _("Driver {0} license expires on {1}.").format(
-                d["driver_name"], d["license_expiry"]
-            )
             allocated_to = _user_for_role(
                 "Fleet Manager",
                 "Driver",
                 d.name,
                 role_users_cache=role_users_cache,
                 known_existing=True,
+            )
+            language = user_languages.setdefault(
+                allocated_to,
+                frappe.db.get_value("User", allocated_to, "language")
+                if allocated_to
+                else None,
+            )
+            title = _("Driver License Expiring: {0}", lang=language).format(
+                d["driver_name"]
+            )
+            description = _("Driver {0} license expires on {1}.", lang=language).format(
+                d["driver_name"], d["license_expiry"]
             )
             closed_existing = any(
                 todo.status in ("Closed", "Cancelled")
@@ -193,15 +202,21 @@ def check_driver_license_expiry():
 
         if compliance_due:
             compliance_signature = _driver_compliance_signature(latest_by_type)
-            compliance_description = _driver_compliance_description(
-                d.driver_name, compliance_signature
-            )
             allocated_to = _user_for_role(
                 "HR Manager",
                 "Driver",
                 d.name,
                 role_users_cache=role_users_cache,
                 known_existing=True,
+            )
+            language = user_languages.setdefault(
+                allocated_to,
+                frappe.db.get_value("User", allocated_to, "language")
+                if allocated_to
+                else None,
+            )
+            compliance_description = _driver_compliance_description(
+                d.driver_name, compliance_signature, lang=language
             )
             closed_existing = next(
                 (
@@ -250,10 +265,6 @@ def check_driver_license_expiry():
         if d.safety_training_expiry and getdate(d.safety_training_expiry) <= getdate(
             threshold
         ):
-            title = _("Safety Training Expiring: {0}").format(d["driver_name"])
-            description = _("Driver {0} safety training expires on {1}.").format(
-                d["driver_name"], d["safety_training_expiry"]
-            )
             allocated_to = _user_for_role(
                 "HR Manager",
                 "Driver",
@@ -261,6 +272,18 @@ def check_driver_license_expiry():
                 role_users_cache=role_users_cache,
                 known_existing=True,
             )
+            language = user_languages.setdefault(
+                allocated_to,
+                frappe.db.get_value("User", allocated_to, "language")
+                if allocated_to
+                else None,
+            )
+            title = _("Safety Training Expiring: {0}", lang=language).format(
+                d["driver_name"]
+            )
+            description = _(
+                "Driver {0} safety training expires on {1}.", lang=language
+            ).format(d["driver_name"], d["safety_training_expiry"])
             closed_existing = any(
                 todo.status in ("Closed", "Cancelled")
                 and _driver_alert_kind(todo.description) == "safety"
@@ -358,13 +381,14 @@ def _driver_compliance_signature(latest_by_type):
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
 
 
-def _driver_compliance_description(driver_name, signature):
+def _driver_compliance_description(driver_name, signature, lang=None):
     return (
-        _("Restricted Driver Compliance Review")
+        _("Restricted Driver Compliance Review", lang=lang)
         + "\n"
         + _(
             "Review the restricted professional-driver compliance records for {0}. "
-            "This task intentionally contains no medical result or date."
+            "This task intentionally contains no medical result or date.",
+            lang=lang,
         ).format(driver_name)
         + "\n"
         + f"[SOTRAMA-DRIVER-COMPLIANCE:{signature}]"

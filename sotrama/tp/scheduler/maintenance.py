@@ -61,19 +61,33 @@ def check_maintenance_due():
     alert_days = int(14 if configured_days is None else configured_days)
     due_date_threshold = getdate(add_days(today(), alert_days))
     role_users_cache = {}
+    user_languages = {}
 
     retained_todo_names = set()
     for sched in schedules:
         vehicle_row = vehicles_by_name.get(sched.vehicle)
         due_reasons = []
+        allocated_to = _user_for_role(
+            "Fleet Manager",
+            "Maintenance Schedule",
+            sched.name,
+            role_users_cache=role_users_cache,
+            known_existing=True,
+        )
+        language = user_languages.setdefault(
+            allocated_to,
+            frappe.db.get_value("User", allocated_to, "language")
+            if allocated_to
+            else None,
+        )
         if sched.next_due_date and getdate(sched.next_due_date) <= due_date_threshold:
-            due_reasons.append(_("due date {0}").format(sched.next_due_date))
+            due_reasons.append(_("due date {0}", lang=language).format(sched.next_due_date))
 
         if sched.next_due_odometer:
             current_odometer = odometers_by_vehicle.get(sched.vehicle, 0)
             if current_odometer >= sched.next_due_odometer:
                 due_reasons.append(
-                    _("odometer {0} km (target {1} km)").format(
+                    _("odometer {0} km (target {1} km)", lang=language).format(
                         current_odometer, sched.next_due_odometer
                     )
                 )
@@ -85,14 +99,6 @@ def check_maintenance_due():
             or vehicle_row.vehicle_status in ("Retired", "Scrapped")
         ):
             continue
-
-        allocated_to = _user_for_role(
-            "Fleet Manager",
-            "Maintenance Schedule",
-            sched.name,
-            role_users_cache=role_users_cache,
-            known_existing=True,
-        )
         schedule_todos = todos_by_schedule.get(sched.name, [])
         alert_signature = _maintenance_alert_signature(sched)
         closed_existing = next(
@@ -118,10 +124,10 @@ def check_maintenance_due():
                 existing.name,
                 {
                     "allocated_to": allocated_to,
-                    "description": _("Maintenance Due: {0} (Vehicle: {1})\n{2}").format(
+                    "description": _("Maintenance Due: {0} (Vehicle: {1})\n{2}", lang=language).format(
                         sched.get("job_type", "Service"),
                         sched.get("vehicle", "Unknown"),
-                        _("Scheduled maintenance for vehicle {0} is due: {1}.").format(
+                        _("Scheduled maintenance for vehicle {0} is due: {1}.", lang=language).format(
                             sched.get("vehicle"), "; ".join(due_reasons)
                         ),
                     )
@@ -132,15 +138,15 @@ def check_maintenance_due():
             )
         else:
             todo = frappe.new_doc("ToDo")
-            title = _("Maintenance Due: {0} (Vehicle: {1})").format(
+            title = _("Maintenance Due: {0} (Vehicle: {1})", lang=language).format(
                 sched.get("job_type", "Service"), sched.get("vehicle", "Unknown")
             )
             todo.description = (
                 title
                 + "\n"
-                + _("Scheduled maintenance for vehicle {0} is due: {1}.").format(
-                    sched.get("vehicle"), "; ".join(due_reasons)
-                )
+                + _(
+                    "Scheduled maintenance for vehicle {0} is due: {1}.", lang=language
+                ).format(sched.get("vehicle"), "; ".join(due_reasons))
                 + "\n"
                 + alert_signature
             )
