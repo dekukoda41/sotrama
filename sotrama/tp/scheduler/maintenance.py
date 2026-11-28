@@ -66,16 +66,19 @@ def check_maintenance_due():
     retained_todo_names = set()
     for sched in schedules:
         vehicle_row = vehicles_by_name.get(sched.vehicle)
-        due_reasons = []  # (kind, value) pairs; translated after language lookup
+        due_reasons = []  # (template, args) pairs; translated after language lookup
 
         if sched.next_due_date and getdate(sched.next_due_date) <= due_date_threshold:
-            due_reasons.append(("date", sched.next_due_date))
+            due_reasons.append(("due date {0}", (sched.next_due_date,)))
 
         if sched.next_due_odometer:
             current_odometer = odometers_by_vehicle.get(sched.vehicle, 0)
             if current_odometer >= sched.next_due_odometer:
                 due_reasons.append(
-                    ("odometer", f"{current_odometer} km (target {sched.next_due_odometer} km)")
+                    (
+                        "odometer {0} km (target {1} km)",
+                        (current_odometer, sched.next_due_odometer),
+                    )
                 )
 
         if (
@@ -100,10 +103,8 @@ def check_maintenance_due():
             else None,
         )
         due_reasons = [
-            _("due date {0}", lang=language).format(value)
-            if kind == "date"
-            else _("odometer {0}", lang=language).format(value)
-            for kind, value in due_reasons
+            _(template, lang=language).format(*args)
+            for template, args in due_reasons
         ]
 
         schedule_todos = todos_by_schedule.get(sched.name, [])
