@@ -1000,7 +1000,11 @@ jobs:
 
       - name: Run Sotrama unit tests
         run: |
-          python -c "import frappe" 2>/dev/null && python -m pytest sotrama/tests/ -v || echo "Frappe not installed in unit-test job; tests run in frappe-integration job instead."
+          if python -c "import frappe" 2>/dev/null; then
+            python -m pytest sotrama/tests/ -v
+          else
+            echo "Frappe not installed in unit-test job; tests run in frappe-integration job instead."
+          fi
 
   frappe-integration:
     name: Frappe 16.61.0 / ERPNext 16.61.0 / HRMS 16.60.0
