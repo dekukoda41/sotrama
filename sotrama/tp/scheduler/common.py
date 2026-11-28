@@ -3,11 +3,33 @@
 import frappe
 
 
+def _log_administrator_fallback(role_name, doctype, docname, reason):
+    """Log Administrator fallback so misrouted scheduler alerts are visible.
+
+    Call sites: sotrama/tp/scheduler/drivers.py (Fleet Manager / HR Manager on
+    Driver), sotrama/tp/scheduler/maintenance.py (Fleet Manager on Maintenance
+    Schedule), sotrama/tp/scheduler/documents.py (Fleet Manager on Vehicle).
+    Reads: Has Role (role, parenttype, parent), User (name, enabled, language),
+    and the target doctype document for permission checks. Writes: Error Log
+    doctype via frappe.log_error.
+    """
+    frappe.log_error(
+        message=(
+            f"Scheduler role '{role_name}' for {doctype} {docname!r} "
+            f"fell back to Administrator: {reason}"
+        ),
+        title="SOTRAMA Administrator Fallback",
+    )
+
+
 def _user_for_role(
     role_name, doctype, docname, *, role_users_cache=None, known_existing=False
 ):
     """Return a role user who can read this exact company-scoped document."""
     if not docname or (not known_existing and not frappe.db.exists(doctype, docname)):
+        _log_administrator_fallback(
+            role_name, doctype, docname, "document missing or not known to exist"
+        )
         return "Administrator"
     role_users_cache = role_users_cache if role_users_cache is not None else {}
     if role_name not in role_users_cache:
@@ -38,5 +60,11 @@ def _user_for_role(
                 return user
         except frappe.DoesNotExistError:
             # The record may have been deleted after the scheduler batch read.
+            _log_administrator_fallback(
+                role_name, doctype, docname, "record deleted during batch read"
+            )
             return "Administrator"
+    _log_administrator_fallback(
+        role_name, doctype, docname, "no enabled role user with read permission"
+    )
     return "Administrator"

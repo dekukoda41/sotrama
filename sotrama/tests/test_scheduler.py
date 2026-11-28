@@ -553,6 +553,33 @@ class TestFleetSchedulerPrivacy(unittest.TestCase):
 
         self.assertEqual(assigned, "Administrator")
 
+    def test_user_for_role_logs_administrator_fallback(self):
+        from sotrama.tp.scheduler import _user_for_role
+
+        with (
+            patch(
+                "frappe.get_all",
+                side_effect=[["fleet@example.invalid"], ["fleet@example.invalid"]],
+            ),
+            patch("frappe.db.exists", return_value=True),
+            patch(
+                "frappe.has_permission",
+                side_effect=frappe.DoesNotExistError,
+            ),
+            patch("frappe.log_error") as log_error,
+        ):
+            assigned = _user_for_role(
+                "Fleet Manager", "Vehicle", "VEH-DELETED", known_existing=True
+            )
+
+        self.assertEqual(assigned, "Administrator")
+        log_error.assert_called_once()
+        self.assertEqual(
+            log_error.call_args.kwargs["title"], "SOTRAMA Administrator Fallback"
+        )
+        self.assertIn("VEH-DELETED", log_error.call_args.kwargs["message"])
+        self.assertIn("Fleet Manager", log_error.call_args.kwargs["message"])
+
     def test_maintenance_due_scheduler_batches_vehicle_odometer_and_open_todos(self):
         from sotrama.tp.scheduler import check_maintenance_due
 
