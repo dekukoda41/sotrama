@@ -1523,7 +1523,7 @@ def _check_tp_settings_field_read_permission(
     if isinstance(fieldnames, str):
         try:
             fieldnames = frappe.parse_json(fieldnames)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             fieldnames = [fieldnames]
     if isinstance(fieldnames, dict):
         fieldnames = list(fieldnames)

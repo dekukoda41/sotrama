@@ -48,12 +48,9 @@ def validate_active_driver(driver_name: str, company: str | None = None):
             "company",
             "employee",
             "docstatus",
-            "license_class",
             "license_expiry",
             "medical_expiry",
             "safety_training_expiry",
-            "professional_certificate",
-            "professional_certificate_number",
         ],
         as_dict=True,
     )
@@ -131,9 +128,7 @@ def validate_active_driver(driver_name: str, company: str | None = None):
                     ).format(driver_name)
                 )
             frappe.throw(
-                _("Driver {0} has an expired {1} ({2}).").format(
-                    driver_name, label, expiry_date
-                )
+                _("Driver {0} has an expired {1}.").format(driver_name, label)
             )
 
     return driver
