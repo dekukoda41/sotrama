@@ -16,12 +16,17 @@ do not grant access to Company, HR or Fleet records.
 ## Compatibility
 
 - Python: **3.14**
-- Frappe Framework: **16.60.0 or later, below 17.0.0**
-- ERPNext: **16.60.0 or later, below 17.0.0**
-- Frappe HR (HRMS): **16.60.0 or later, below 17.0.0**
+- Frappe Framework: **>=16.60.0,<17.0.0**
+- ERPNext: **>=16.60.0,<17.0.0**
+- Frappe HR (HRMS): **>=16.60.0,<17.0.0**
 
-The current source review was checked against Frappe **16.60.2**, ERPNext
-**16.60.0** and HRMS **16.60.0**. HRMS 16.60 requires Frappe 16.60.0 or later.
+Declared dependency range vs CI-tested combination: the app declares
+`>=16.60.0,<17.0.0` for Frappe, ERPNext and HRMS, meaning any v16.x patch in
+that range should install. The exact combination verified by GitHub Actions
+integration tests is **Frappe 16.61.0 / ERPNext 16.61.0 / HRMS 16.60.0**,
+Python 3.14, Node 24, MariaDB 11.8, Redis 8. Support for every v16.x minor
+release within the declared range is not implied by a single CI matrix.
+
 The application and target release version is **1.3.6**. This source tree is
 the release candidate for `v1.3.6`; publish it only after CI and packaging
 verification succeed.
@@ -342,11 +347,13 @@ to show installed apps alongside ERPNext and Frappe HR.
   itself currently has no Node.js package dependencies or bundle build.
 - Sotrama version: **1.3.6 (unreleased development tree)**
 
-The minimum version reflects the v16.60 platform baseline. It does not mean
-that an existing site has been upgraded: verify the installed versions with
-`bench version` before installing this release. Sotrama does not currently
-implement Algerian payroll statutory calculations; payroll rules must not be
-assumed compliant without a separate legal and accounting validation.
+Declared dependency range vs CI-tested combination: the app declares
+`>=16.60.0,<17.0.0` for Frappe, ERPNext and HRMS. The exact combination
+verified by GitHub Actions integration tests is **Frappe 16.61.0 / ERPNext
+16.61.0 / HRMS 16.60.0**, Python 3.14, Node 24, MariaDB 11.8, Redis 8.
+Support for every v16.x minor release within the declared range is not implied
+by a single CI matrix. Verify installed versions with `bench version` before
+installing this release.
 
 ## Installation
 
@@ -354,7 +361,7 @@ Install the app in a Bench that already has compatible ERPNext and HRMS apps:
 
 ```bash
 cd ~/frappe-bench
-bench get-app https://github.com/aa790933/sotrama
+bench get-app https://github.com/dekukoda41/sotrama
 bench --site your-site install-app sotrama
 bench --site your-site migrate
 ```
@@ -484,6 +491,17 @@ bench --site test-site run-tests --app sotrama
 ```
 
 Do not run integration tests against a production site.
+
+### GitHub Actions validation
+
+Every push and pull request to `main` runs the CI workflow (`.github/workflows/ci.yml`):
+
+1. **static-and-package** — `ruff check sotrama`, `compileall`, AST checks on Frappe v16 `msgprint` calls, JS syntax checks, JSON metadata validation, wheel build.
+2. **security-ci** — lint on security-critical files, `compileall`, security invariant validation (RPC overrides, `has_permission`, `doc_events`, DocType privacy constants, company-scoped controllers).
+3. **app-lint-compile** — `ruff check sotrama`, `compileall`, conditional pytest only when `frappe` is importable.
+4. **frappe-integration** — real disposable Bench on GitHub-hosted runners with Frappe 16.61.0, ERPNext 16.61.0, HRMS 16.60.0, MariaDB 11.8, Redis 8; installs ERPNext, HRMS and Sotrama, creates a test site, runs `bench --site test_site run-tests --app sotrama`, and validates the French `fr.po` Gettext catalog.
+
+No test job is silently skipped. A skipped unit-test job (frappe unavailable in lint/compile) is not reported as a passing test suite.
 
 ## License
 
