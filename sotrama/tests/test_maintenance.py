@@ -3,7 +3,7 @@ import unittest
 
 # Frappe integration tests for Sotrama maintenance behavior.
 import uuid
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import frappe
 from frappe.utils import add_days, getdate, today
@@ -67,9 +67,6 @@ class TestMaintenanceJobCard(unittest.TestCase):
         ).insert(ignore_permissions=True)
 
     def test_automatic_schedule_lookup_uses_read_permission_and_company_scope(self):
-        from sotrama.tp.doctype.maintenance_job_card.maintenance_job_card import (
-            MaintenanceJobCard,
-        )
 
         job_card = frappe._dict(
             job_nature="Scheduled Service",
@@ -86,6 +83,10 @@ class TestMaintenanceJobCard(unittest.TestCase):
             patch("frappe.has_permission", return_value=True) as has_permission,
             patch("sotrama.tp.settings.validate_company_access") as validate_company,
         ):
+            from sotrama.tp.doctype.maintenance_job_card.maintenance_job_card import (
+                MaintenanceJobCard,
+            )
+
             MaintenanceJobCard._validate_maintenance_schedule(job_card)
 
         self.assertEqual(job_card.maintenance_schedule, "MS-TEST")
@@ -105,9 +106,6 @@ class TestMaintenanceJobCard(unittest.TestCase):
         validate_company.assert_called_once_with(self.company, "Maintenance Schedule")
 
     def test_automatic_schedule_lookup_rejects_other_company(self):
-        from sotrama.tp.doctype.maintenance_job_card.maintenance_job_card import (
-            MaintenanceJobCard,
-        )
 
         job_card = frappe._dict(
             job_nature="Scheduled Service",
@@ -125,6 +123,10 @@ class TestMaintenanceJobCard(unittest.TestCase):
             patch("sotrama.tp.settings.validate_company_access"),
             self.assertRaises(frappe.ValidationError),
         ):
+            from sotrama.tp.doctype.maintenance_job_card.maintenance_job_card import (
+                MaintenanceJobCard,
+            )
+
             MaintenanceJobCard._validate_maintenance_schedule(job_card)
 
     def tearDown(self):
@@ -1042,3 +1044,278 @@ class TestMaintenanceIntegration(unittest.TestCase):
         schedule.status = "Completed"
         with self.assertRaises(frappe.ValidationError):
             MaintenanceSchedule._validate_status_transition(schedule)
+
+
+class TestMaintenanceJobCardAuthorization(unittest.TestCase):
+    """Authorization and company-scoping for Maintenance Job Card fields and links."""
+
+    def setUp(self):
+        self.company = "SOTRAMA-TEST-COMPANY"
+        self.other_company = "SOTRAMA-OTHER-COMPANY"
+        self.vehicle = frappe._dict(
+            name="VEH-TEST-001",
+            company=self.company,
+            cost_center="CC-TEST-001",
+        )
+        self.driver = frappe._dict(
+            name="DRV-TEST-001",
+            driver_name="Test Driver",
+            company=self.company,
+        )
+        self.other_driver = frappe._dict(
+            name="DRV-TEST-002",
+            driver_name="Other Company Driver",
+            company=self.other_company,
+        )
+
+    def test_validate_driver_at_time_rejects_cross_company_driver(self):
+        """Driver at Time of Issue must belong to the Job Card Company."""
+
+        job_card = frappe.new_doc("Maintenance Job Card")
+        job_card.company = self.company
+        job_card.driver_at_time = self.other_driver.name
+
+        with (
+            patch(
+                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.validate_linked_document_read_permission"
+            ),
+            patch(
+                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.frappe.db.get_value",
+                return_value=self.other_driver,
+            ),
+            self.assertRaises(frappe.ValidationError),
+        ):
+            job_card._validate_driver_at_time()
+
+    def test_validate_driver_at_time_accepts_same_company_driver(self):
+        """Driver at Time of Issue in the same company is allowed."""
+
+        job_card = frappe.new_doc("Maintenance Job Card")
+        job_card.company = self.company
+        job_card.driver_at_time = self.driver.name
+
+        with (
+            patch(
+                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.validate_linked_document_read_permission"
+            ),
+            patch(
+                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.frappe.db.get_value",
+                return_value=self.driver,
+            ),
+        ):
+            job_card._validate_driver_at_time()
+
+    def test_validate_driver_at_time_handles_missing_driver(self):
+        """A non-existent Driver at Time of Issue is rejected."""
+
+        job_card = frappe.new_doc("Maintenance Job Card")
+        job_card.company = self.company
+        job_card.driver_at_time = "DRV-NONEXISTENT"
+
+        with (
+            patch(
+                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.validate_linked_document_read_permission"
+            ),
+            patch(
+                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.frappe.db.get_value",
+                return_value=None,
+            ),
+            self.assertRaises(frappe.ValidationError),
+        ):
+            job_card._validate_driver_at_time()
+
+    def test_validate_driver_at_time_no_driver_skips_validation(self):
+        """No Driver at Time of Issue means no company check is needed."""
+
+        job_card = frappe.new_doc("Maintenance Job Card")
+        job_card.company = self.company
+        job_card.driver_at_time = None
+
+        with (
+            patch(
+                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.validate_linked_document_read_permission"
+            ) as perm_check,
+        ):
+            job_card._validate_driver_at_time()
+        perm_check.assert_not_called()
+
+    def test_post_stock_entries_uses_configured_warehouse(self):
+        """Stock Entry is posted from the vehicle's parts warehouse or TP Setting."""
+
+        job_card = frappe.new_doc("Maintenance Job Card")
+        job_card.company = self.company
+        job_card.vehicle = self.vehicle.name
+        job_card.job_date = "2026-11-28"
+        job_card.append("parts_used", {"item": "ITEM-001", "quantity": 2, "rate": 100})
+
+        vehicle_doc = frappe._dict(
+            name=self.vehicle.name,
+            company=self.company,
+            parts_warehouse="WH-TEST-001",
+        )
+        stock_entry = Mock(name="STE-TEST-001")
+        stock_entry.name = "STE-TEST-001"
+
+        with (
+            patch(
+                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.frappe.get_doc",
+                return_value=vehicle_doc,
+            ),
+            patch(
+                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.validate_linked_document_read_permission"
+            ),
+            patch(
+                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.frappe.db.get_value",
+                side_effect=[
+                    frappe._dict(company=self.company, is_group=0, disabled=0),
+                    frappe._dict(is_stock_item=1, disabled=0),
+                ],
+            ),
+            patch(
+                "sotrama.tp.settings.get_tp_company_setting", return_value=None
+            ),
+            patch(
+                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.frappe.new_doc",
+                return_value=stock_entry,
+            ),
+        ):
+            job_card._post_stock_entries()
+
+        stock_entry.insert.assert_called_once_with(ignore_permissions=True)
+        stock_entry.submit.assert_called_once()
+        self.assertEqual(stock_entry.company, self.company)
+        self.assertEqual(stock_entry.items[0].s_warehouse, "WH-TEST-001")
+
+    def test_post_stock_entries_rejects_missing_warehouse(self):
+        """Stock Entry posting fails when no warehouse is configured."""
+
+        job_card = frappe.new_doc("Maintenance Job Card")
+        job_card.company = self.company
+        job_card.vehicle = self.vehicle.name
+        job_card.append("parts_used", {"item": "ITEM-001", "quantity": 2, "rate": 100})
+
+        vehicle_doc = frappe._dict(
+            name=self.vehicle.name,
+            company=self.company,
+            parts_warehouse=None,
+        )
+
+        with (
+            patch(
+                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.frappe.get_doc",
+                return_value=vehicle_doc,
+            ),
+            patch(
+                "sotrama.tp.settings.get_tp_company_setting", return_value=None
+            ),
+            self.assertRaises(frappe.ValidationError),
+        ):
+            job_card._post_stock_entries()
+
+    def test_validate_labour_lines_handles_empty_mechanic_names(self):
+        """Labour lines with no mechanics skip the Employee lookup entirely."""
+
+        job_card = frappe.new_doc("Maintenance Job Card")
+        job_card.company = self.company
+        job_card.append("labour_lines", {"mechanic": None, "hours": 2, "rate": 500})
+        job_card.append("labour_lines", {"mechanic": "", "hours": 1, "rate": 300})
+
+        with (
+            patch(
+                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card._validate_workshop_employee_lookup_access"
+            ) as access_check,
+            patch(
+                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.frappe.get_all"
+            ) as get_all,
+        ):
+            job_card._validate_labour_lines()
+        access_check.assert_not_called()
+        get_all.assert_not_called()
+        self.assertIsNone(job_card.labour_lines[0].mechanic_name)
+        self.assertIsNone(job_card.labour_lines[1].mechanic_name)
+
+    def test_validate_labour_lines_rejects_cross_company_employee(self):
+        """An Employee from another company cannot be added to labour lines."""
+
+        job_card = frappe.new_doc("Maintenance Job Card")
+        job_card.company = self.company
+        job_card.append(
+            "labour_lines", {"mechanic": "EMP-OTHER", "hours": 2, "rate": 500}
+        )
+
+        with (
+            patch(
+                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card._validate_workshop_employee_lookup_access"
+            ),
+            patch(
+                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.frappe.get_all",
+                return_value=[],
+            ),
+            self.assertRaises(frappe.ValidationError),
+        ):
+            job_card._validate_labour_lines()
+
+    def test_validate_breakdown_links_rejects_cross_company_incident(self):
+        """A Linked Breakdown Incident from another company is rejected."""
+
+        job_card = frappe.new_doc("Maintenance Job Card")
+        job_card.company = self.company
+        job_card.vehicle = self.vehicle.name
+        job_card.linked_breakdown_incident = "BRK-OTHER-COMPANY"
+
+        with (
+            patch(
+                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.validate_linked_document_read_permission"
+            ),
+            patch(
+                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.frappe.db.get_value",
+                return_value=frappe._dict(
+                    company=self.other_company,
+                    vehicle="VEH-OTHER",
+                    docstatus=1,
+                ),
+            ),
+            self.assertRaises(frappe.ValidationError),
+        ):
+            job_card._validate_breakdown_links()
+
+    def test_validate_breakdown_links_accepts_same_company_and_vehicle(self):
+        """A Linked Breakdown Incident matching the job card's company and vehicle is accepted."""
+
+        job_card = frappe.new_doc("Maintenance Job Card")
+        job_card.company = self.company
+        job_card.vehicle = self.vehicle.name
+        job_card.linked_breakdown_incident = "BRK-SAME-COMPANY"
+
+        with (
+            patch(
+                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.validate_linked_document_read_permission"
+            ),
+            patch(
+                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.frappe.db.get_value",
+                return_value=frappe._dict(
+                    company=self.company,
+                    vehicle=self.vehicle.name,
+                    docstatus=1,
+                ),
+            ),
+        ):
+            job_card._validate_breakdown_links()
+
+    def test_validate_job_type_with_inactive_type_and_no_schedule_is_rejected(self):
+        """An inactive Maintenance Job Type without an active schedule is rejected."""
+
+        job_card = frappe.new_doc("Maintenance Job Card")
+        job_card.job_type = "JT-INACTIVE"
+
+        with (
+            patch(
+                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.validate_linked_document_read_permission"
+            ),
+            patch(
+                "sotrama.tp.doctype.maintenance_job_card.maintenance_job_card.frappe.db.get_value",
+                side_effect=[False, None],
+            ),
+            self.assertRaises(frappe.ValidationError),
+        ):
+            job_card._validate_job_type()

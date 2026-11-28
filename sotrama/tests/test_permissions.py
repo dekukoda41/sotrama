@@ -2945,3 +2945,852 @@ class TestFleetChildTableAndAttachmentSecurity(unittest.TestCase):
             ["FILE-DIRECT"],
         )
         self.assertEqual(docinfo.attachment_logs, [])
+
+
+class TestValidateActiveDriverProjectionAndExpiry(unittest.TestCase):
+    """validate_active_driver must not read unused HR-only fields and must not
+    leak expiry dates in error messages (SEC-002)."""
+
+    def _driver(self, **overrides):
+        base = frappe._dict(
+            name="DRV-001",
+            company="COMPANY-A",
+            status="Active",
+            docstatus=1,
+            employee=None,
+            license_expiry=None,
+            medical_expiry=None,
+            safety_training_expiry=None,
+        )
+        base.update(overrides)
+        return base
+
+    def test_projection_excludes_unused_hr_fields(self):
+        from sotrama.tp.validation import validate_active_driver
+
+        driver = self._driver()
+        with (
+            patch("frappe.has_permission", return_value=True),
+            patch("frappe.db.get_value", return_value=driver) as get_value,
+            patch("sotrama.tp.settings.validate_company_access"),
+            patch("sotrama.tp.validation.get_tp_setting", return_value=0),
+        ):
+            validate_active_driver("DRV-001", "COMPANY-A")
+
+        fields = get_value.call_args.args[2]
+        self.assertNotIn("license_class", fields)
+        self.assertNotIn("professional_certificate", fields)
+        self.assertNotIn("professional_certificate_number", fields)
+
+    def test_driver_without_unused_hr_fields_still_validates(self):
+        from sotrama.tp.validation import validate_active_driver
+
+        driver = self._driver()
+        for field in (
+            "license_class",
+            "professional_certificate",
+            "professional_certificate_number",
+        ):
+            driver.pop(field, None)
+        with (
+            patch("frappe.has_permission", return_value=True),
+            patch("frappe.db.get_value", return_value=driver),
+            patch("sotrama.tp.settings.validate_company_access"),
+            patch("sotrama.tp.validation.get_tp_setting", return_value=0),
+        ):
+            result = validate_active_driver("DRV-001", "COMPANY-A")
+        self.assertEqual(result, driver)
+
+    def test_expired_driver_license_error_omits_expiry_date(self):
+        from sotrama.tp.validation import validate_active_driver
+
+        driver = self._driver(license_expiry="2020-01-01")
+        with (
+            patch("frappe.has_permission", return_value=True),
+            patch("frappe.db.get_value", return_value=driver),
+            patch("sotrama.tp.settings.validate_company_access"),
+            patch(
+                "sotrama.tp.validation.get_tp_setting",
+                side_effect=lambda key, default=0: (
+                    1 if key == "block_expired_driver_license" else default
+                ),
+            ),
+            self.assertRaises(frappe.ValidationError) as ctx,
+        ):
+            validate_active_driver("DRV-001", "COMPANY-A")
+        self.assertNotIn("2020-01-01", str(ctx.exception))
+        self.assertIn("driving licence", str(ctx.exception))
+
+    def test_expired_safety_training_error_omits_expiry_date(self):
+        from sotrama.tp.validation import validate_active_driver
+
+        driver = self._driver(safety_training_expiry="2020-01-01")
+        with (
+            patch("frappe.has_permission", return_value=True),
+            patch("frappe.db.get_value", return_value=driver),
+            patch("sotrama.tp.settings.validate_company_access"),
+            patch(
+                "sotrama.tp.validation.get_tp_setting",
+                side_effect=lambda key, default=0: (
+                    1 if key == "block_expired_safety_training" else default
+                ),
+            ),
+            self.assertRaises(frappe.ValidationError) as ctx,
+        ):
+            validate_active_driver("DRV-001", "COMPANY-A")
+        self.assertNotIn("2020-01-01", str(ctx.exception))
+        self.assertIn("safety training certificate", str(ctx.exception))
+
+    def test_expired_medical_error_stays_generic(self):
+        from sotrama.tp.validation import validate_active_driver
+
+        driver = self._driver(medical_expiry="2020-01-01")
+        with (
+            patch("frappe.has_permission", return_value=True),
+            patch("frappe.db.get_value", return_value=driver),
+            patch("sotrama.tp.settings.validate_company_access"),
+            patch(
+                "sotrama.tp.validation.get_tp_setting",
+                side_effect=lambda key, default=0: (
+                    1 if key == "block_expired_medical_certificate" else default
+                ),
+            ),
+            self.assertRaises(frappe.ValidationError) as ctx,
+        ):
+            validate_active_driver("DRV-001", "COMPANY-A")
+        self.assertNotIn("2020-01-01", str(ctx.exception))
+        self.assertIn("HR compliance policy", str(ctx.exception))
+
+    def test_expiry_not_blocked_when_all_settings_disabled(self):
+        from sotrama.tp.validation import validate_active_driver
+
+        driver = self._driver(
+            license_expiry="2020-01-01",
+            medical_expiry="2020-01-01",
+            safety_training_expiry="2020-01-01",
+        )
+        with (
+            patch("frappe.has_permission", return_value=True),
+            patch("frappe.db.get_value", return_value=driver),
+            patch("sotrama.tp.settings.validate_company_access"),
+            patch("sotrama.tp.validation.get_tp_setting", return_value=0),
+        ):
+            result = validate_active_driver("DRV-001", "COMPANY-A")
+        self.assertEqual(result, driver)
+
+    def test_cross_company_driver_assignment_is_denied(self):
+        from sotrama.tp.validation import validate_active_driver
+
+        driver = self._driver(company="COMPANY-B")
+        with (
+            patch("frappe.has_permission", return_value=True),
+            patch("frappe.db.get_value", return_value=driver),
+            patch("sotrama.tp.settings.validate_company_access"),
+            self.assertRaises(frappe.ValidationError),
+        ):
+            validate_active_driver("DRV-001", "COMPANY-A")
+
+
+class TestFleetCompanyUserPermissionIsolation(unittest.TestCase):
+    """enforce_fleet_company_user_permissions must keep Company-scoped Fleet
+    records inside the user's User Permission scope (SEC-001)."""
+
+    def test_administrator_and_system_manager_bypass_company_check(self):
+        from sotrama.permissions import enforce_fleet_company_user_permissions
+
+        doc = frappe._dict(doctype="Driver", name="DRV-001", company="COMPANY-B")
+        for roles in (["System Manager"], ["Administrator"]):
+            with self.subTest(roles=roles):
+                with (
+                    patch("frappe.get_roles", return_value=roles),
+                    patch(
+                        "sotrama.tp.settings.validate_company_access"
+                    ) as validate_company,
+                ):
+                    self.assertTrue(
+                        enforce_fleet_company_user_permissions(
+                            doc, user="hr@example.invalid"
+                        )
+                    )
+                validate_company.assert_not_called()
+
+    def test_user_restricted_to_company_a_passes_for_company_a(self):
+        from sotrama.permissions import enforce_fleet_company_user_permissions
+
+        doc = frappe._dict(doctype="Driver", name="DRV-001", company="COMPANY-A")
+        with (
+            patch("frappe.get_roles", return_value=["Fleet Manager"]),
+            patch(
+                "sotrama.tp.settings.validate_company_access"
+            ) as validate_company,
+            patch(
+                "frappe.permissions.has_user_permission", return_value=True
+            ),
+        ):
+            self.assertTrue(
+                enforce_fleet_company_user_permissions(
+                    doc, user="fleet-a@example.invalid"
+                )
+            )
+        validate_company.assert_called_once_with(
+            "COMPANY-A", "Driver", user="fleet-a@example.invalid"
+        )
+
+    def test_user_restricted_to_company_a_denied_for_company_b(self):
+        from sotrama.permissions import enforce_fleet_company_user_permissions
+
+        doc = frappe._dict(doctype="Driver", name="DRV-001", company="COMPANY-B")
+        with (
+            patch("frappe.get_roles", return_value=["Fleet Manager"]),
+            patch(
+                "sotrama.tp.settings.validate_company_access",
+                side_effect=frappe.PermissionError,
+            ),
+            self.assertRaises(frappe.PermissionError),
+        ):
+            enforce_fleet_company_user_permissions(
+                doc, user="fleet-a@example.invalid"
+            )
+
+    def test_driver_without_company_that_is_not_local_throws(self):
+        from sotrama.permissions import enforce_fleet_company_user_permissions
+
+        doc = frappe._dict(doctype="Driver", name="DRV-001", company=None)
+        with (
+            patch("frappe.get_roles", return_value=["Fleet Manager"]),
+            self.assertRaises(frappe.PermissionError),
+        ):
+            enforce_fleet_company_user_permissions(
+                doc, user="fleet-a@example.invalid"
+            )
+
+    def test_driver_without_company_that_is_local_passes(self):
+        from sotrama.permissions import enforce_fleet_company_user_permissions
+
+        doc = frappe._dict(
+            doctype="Driver", name=None, company=None, __islocal=True
+        )
+        with (
+            patch("frappe.get_roles", return_value=["Fleet Manager"]),
+            patch("sotrama.tp.settings.validate_company_access") as validate_company,
+        ):
+            self.assertTrue(
+                enforce_fleet_company_user_permissions(
+                    doc, user="fleet-a@example.invalid"
+                )
+            )
+        validate_company.assert_not_called()
+
+    def test_has_user_permission_denied_throws(self):
+        from sotrama.permissions import enforce_fleet_company_user_permissions
+
+        doc = frappe._dict(doctype="Driver", name="DRV-001", company="COMPANY-A")
+        with (
+            patch("frappe.get_roles", return_value=["Fleet Manager"]),
+            patch("sotrama.tp.settings.validate_company_access"),
+            patch("frappe.permissions.has_user_permission", return_value=False),
+            self.assertRaises(frappe.PermissionError),
+        ):
+            enforce_fleet_company_user_permissions(
+                doc, user="fleet-a@example.invalid"
+            )
+
+
+class TestDriverAttachmentRpcFilters(unittest.TestCase):
+    """Whitelisted RPC wrappers must filter protected Driver attachments before
+    returning docinfo/attachment metadata to the Desk client."""
+
+    def test_getdoc_filters_driver_attachments_for_non_hr_user(self):
+        from sotrama.permissions import getdoc_with_driver_attachment_filter
+
+        result = frappe._dict(
+            doctype="Driver",
+            name="DRV-001",
+            attachments=[
+                frappe._dict(name="FILE-PUBLIC", attached_to_doctype="Vehicle"),
+                frappe._dict(name="FILE-PRIVATE", attached_to_doctype="Driver"),
+            ],
+        )
+        with (
+            patch.dict(frappe.session, {"user": "fleet@example.invalid"}),
+            patch("frappe.get_roles", return_value=["Fleet Manager"]),
+            patch(
+                "sotrama.permissions._require_driver_attachment_parent_read"
+            ),
+            patch(
+                "frappe.desk.form.load.getdoc", return_value=result
+            ) as upstream_getdoc,
+            patch(
+                "sotrama.permissions._filter_driver_attachment_metadata"
+            ) as filter_driver,
+            patch(
+                "sotrama.permissions._filter_fleet_attachment_metadata"
+            ) as filter_fleet,
+        ):
+            getdoc_with_driver_attachment_filter("Driver", "DRV-001")
+
+        upstream_getdoc.assert_called_once_with("Driver", "DRV-001")
+        filter_driver.assert_called_once_with("Driver", "DRV-001")
+        filter_fleet.assert_called_once_with("Driver", "DRV-001")
+
+    def test_getdoc_requires_driver_parent_read_for_driver_doctype(self):
+        from sotrama.permissions import getdoc_with_driver_attachment_filter
+
+        with (
+            patch.dict(frappe.session, {"user": "fleet@example.invalid"}),
+            patch("frappe.get_roles", return_value=["Fleet Manager"]),
+            patch(
+                "sotrama.permissions._require_driver_attachment_parent_read",
+                side_effect=frappe.PermissionError,
+            ) as require_read,
+            patch("frappe.desk.form.load.getdoc"),
+            self.assertRaises(frappe.PermissionError),
+        ):
+            getdoc_with_driver_attachment_filter("Driver", "DRV-001")
+
+        require_read.assert_called_once_with("Driver", "DRV-001")
+
+    def test_get_docinfo_filters_driver_attachments(self):
+        from sotrama.permissions import get_docinfo_with_driver_attachment_filter
+
+        result = frappe._dict(attachments=[frappe._dict(name="FILE-001")])
+        with (
+            patch.dict(frappe.session, {"user": "fleet@example.invalid"}),
+            patch("frappe.get_roles", return_value=["Fleet Manager"]),
+            patch(
+                "sotrama.permissions._require_driver_attachment_parent_read"
+            ),
+            patch(
+                "frappe.desk.form.load.get_docinfo", return_value=result
+            ) as upstream,
+            patch(
+                "sotrama.permissions._filter_driver_attachment_metadata"
+            ) as filter_driver,
+            patch(
+                "sotrama.permissions._filter_fleet_attachment_metadata"
+            ) as filter_fleet,
+        ):
+            get_docinfo_with_driver_attachment_filter("Driver", "DRV-001")
+
+        upstream.assert_called_once_with("Driver", "DRV-001")
+        filter_driver.assert_called_once_with("Driver", "DRV-001")
+        filter_fleet.assert_called_once_with("Driver", "DRV-001")
+
+    def test_get_docinfo_requires_name_for_driver_doctype(self):
+        from sotrama.permissions import get_docinfo_with_driver_attachment_filter
+
+        with (
+            patch.dict(frappe.session, {"user": "fleet@example.invalid"}),
+            patch("frappe.get_roles", return_value=["Fleet Manager"]),
+            self.assertRaises(frappe.PermissionError),
+        ):
+            get_docinfo_with_driver_attachment_filter("Driver", None)
+
+    def test_get_filtered_attachments_returns_empty_for_non_hr_driver(self):
+        from sotrama.permissions import (
+            get_filtered_attachments_with_driver_attachment_filter,
+        )
+
+        attachments = [frappe._dict(name="FILE-001")]
+        with (
+            patch.dict(frappe.session, {"user": "fleet@example.invalid"}),
+            patch("frappe.get_roles", return_value=["Fleet Manager"]),
+            patch(
+                "sotrama.permissions._require_driver_attachment_parent_read"
+            ),
+            patch(
+                "frappe.desk.form.load.get_filtered_attachments",
+                return_value=attachments,
+            ),
+            patch(
+                "sotrama.permissions._has_hr_file_access", return_value=False
+            ) as hr_access,
+        ):
+            result = get_filtered_attachments_with_driver_attachment_filter(
+                "Driver", "DRV-001", {}
+            )
+
+        self.assertEqual(result, [])
+        hr_access.assert_called_once()
+
+    def test_get_filtered_attachments_returns_attachments_for_hr_user(self):
+        from sotrama.permissions import (
+            get_filtered_attachments_with_driver_attachment_filter,
+        )
+
+        attachments = [frappe._dict(name="FILE-001")]
+        with (
+            patch.dict(frappe.session, {"user": "hr@example.invalid"}),
+            patch("frappe.get_roles", return_value=["HR Manager"]),
+            patch(
+                "sotrama.permissions._require_driver_attachment_parent_read"
+            ),
+            patch(
+                "frappe.desk.form.load.get_filtered_attachments",
+                return_value=attachments,
+            ),
+            patch(
+                "sotrama.permissions._has_hr_file_access", return_value=True
+            ),
+            patch(
+                "sotrama.permissions._can_read_driver_attachment_parent",
+                return_value=True,
+            ),
+        ):
+            result = get_filtered_attachments_with_driver_attachment_filter(
+                "Driver", "DRV-001", {}
+            )
+
+        self.assertEqual(result, attachments)
+
+    def test_filter_driver_attachment_metadata_clears_non_hr_driver_docinfo(self):
+        from sotrama.permissions import _filter_driver_attachment_metadata
+
+        docinfo = frappe._dict(
+            attachments=[frappe._dict(name="FILE-001")],
+            attachment_logs=[frappe._dict(content="log")],
+        )
+        response = frappe._dict(docinfo=docinfo)
+        with (
+            patch("sotrama.permissions.frappe.response", response),
+            patch(
+                "sotrama.permissions._has_hr_file_access", return_value=False
+            ),
+            patch(
+                "sotrama.permissions._can_read_driver_attachment_parent",
+                return_value=False,
+            ),
+        ):
+            _filter_driver_attachment_metadata("Driver", "DRV-001")
+
+        self.assertEqual(docinfo.attachments, [])
+        self.assertEqual(docinfo.attachment_logs, [])
+
+    def test_filter_driver_attachment_metadata_keeps_hr_driver_docinfo(self):
+        from sotrama.permissions import _filter_driver_attachment_metadata
+
+        docinfo = frappe._dict(
+            attachments=[frappe._dict(name="FILE-001")],
+            attachment_logs=[frappe._dict(content="log")],
+        )
+        response = frappe._dict(docinfo=docinfo)
+        with (
+            patch("sotrama.permissions.frappe.response", response),
+            patch(
+                "sotrama.permissions._has_hr_file_access", return_value=True
+            ),
+            patch(
+                "sotrama.permissions._can_read_driver_attachment_parent",
+                return_value=True,
+            ),
+        ):
+            _filter_driver_attachment_metadata("Driver", "DRV-001")
+
+        self.assertEqual(len(docinfo.attachments), 1)
+        self.assertEqual(docinfo.attachments[0].name, "FILE-001")
+
+    def test_filter_driver_attachment_metadata_skips_non_driver_doctype(self):
+        from sotrama.permissions import _filter_driver_attachment_metadata
+
+        docinfo = frappe._dict(
+            attachments=[frappe._dict(name="FILE-001")],
+            attachment_logs=[frappe._dict(content="log")],
+        )
+        response = frappe._dict(docinfo=docinfo)
+        with patch("sotrama.permissions.frappe.response", response):
+            _filter_driver_attachment_metadata("Vehicle", "VEH-001")
+
+        self.assertEqual(len(docinfo.attachments), 1)
+
+
+class TestDriverPrivateAttachmentSecurity(unittest.TestCase):
+    """Driver private attachments must require HR role and parent Driver
+    permission; File owner shortcuts must not bypass Company scope."""
+
+    def test_can_access_driver_private_attachment_requires_hr_role(self):
+        from sotrama.permissions import can_access_driver_private_attachment
+
+        file_doc = frappe._dict(
+            attached_to_doctype="Driver",
+            attached_to_name="DRV-001",
+            is_remote_file=0,
+        )
+        with (
+            patch.dict(frappe.session, {"user": "fleet@example.invalid"}),
+            patch("frappe.get_roles", return_value=["Fleet Manager"]),
+            patch(
+                "sotrama.permissions._has_hr_file_access", return_value=False
+            ) as hr_access,
+        ):
+            self.assertFalse(can_access_driver_private_attachment(file_doc))
+
+        hr_access.assert_called_once_with("fleet@example.invalid")
+
+    def test_can_access_driver_private_attachment_allows_hr_with_driver_read(self):
+        from sotrama.permissions import can_access_driver_private_attachment
+
+        file_doc = frappe._dict(
+            attached_to_doctype="Driver",
+            attached_to_name="DRV-001",
+            is_remote_file=0,
+        )
+        with (
+            patch.dict(frappe.session, {"user": "hr@example.invalid"}),
+            patch("frappe.get_roles", return_value=["HR Manager"]),
+            patch("sotrama.permissions._has_hr_file_access", return_value=True),
+            patch(
+                "frappe.has_permission", return_value=True
+            ) as has_permission,
+        ):
+            self.assertTrue(
+                can_access_driver_private_attachment(
+                    file_doc, user="hr@example.invalid", ptype="read"
+                )
+            )
+
+        has_permission.assert_called_once_with(
+            "Driver", "read", doc="DRV-001", user="hr@example.invalid",
+            ignore_share_permissions=True,
+        )
+
+    def test_can_access_driver_private_attachment_denies_remote_file(self):
+        from sotrama.permissions import can_access_driver_private_attachment
+
+        file_doc = frappe._dict(
+            attached_to_doctype="Driver",
+            attached_to_name="DRV-001",
+            is_remote_file=1,
+        )
+        with (
+            patch.dict(frappe.session, {"user": "hr@example.invalid"}),
+            patch("frappe.get_roles", return_value=["HR Manager"]),
+            patch("sotrama.permissions._has_hr_file_access", return_value=True),
+        ):
+            self.assertFalse(can_access_driver_private_attachment(file_doc))
+
+    def test_can_access_driver_private_attachment_denies_unrelated_doctype(self):
+        from sotrama.permissions import can_access_driver_private_attachment
+
+        file_doc = frappe._dict(
+            attached_to_doctype="Communication",
+            attached_to_name="COMM-001",
+        )
+        with (
+            patch.dict(frappe.session, {"user": "hr@example.invalid"}),
+            patch("frappe.get_roles", return_value=["HR Manager"]),
+            patch("sotrama.permissions._has_hr_file_access", return_value=True),
+        ):
+            self.assertFalse(can_access_driver_private_attachment(file_doc))
+
+    def test_can_access_driver_private_attachment_denies_share_without_system_manager(
+        self,
+    ):
+        from sotrama.permissions import can_access_driver_private_attachment
+
+        file_doc = frappe._dict(
+            attached_to_doctype="Driver",
+            attached_to_name="DRV-001",
+            is_remote_file=0,
+        )
+        with (
+            patch.dict(frappe.session, {"user": "hr@example.invalid"}),
+            patch("frappe.get_roles", return_value=["HR Manager"]),
+            patch("sotrama.permissions._has_hr_file_access", return_value=True),
+        ):
+            self.assertFalse(
+                can_access_driver_private_attachment(
+                    file_doc, user="hr@example.invalid", ptype="share"
+                )
+            )
+
+    def test_file_has_permission_denies_driver_private_without_access(self):
+        from sotrama.permissions import file_has_permission
+
+        file_doc = frappe._dict(
+            attached_to_doctype="Driver",
+            attached_to_name="DRV-001",
+            sotrama_private_driver_attachment=1,
+        )
+        with (
+            patch(
+                "sotrama.permissions.is_driver_private_attachment", return_value=True
+            ),
+            patch(
+                "sotrama.permissions.can_access_driver_private_attachment",
+                return_value=False,
+            ) as can_access,
+        ):
+            self.assertFalse(
+                file_has_permission(
+                    file_doc, user="fleet@example.invalid", ptype="read"
+                )
+            )
+
+        can_access.assert_called_once_with(
+            file_doc, "fleet@example.invalid", ptype="read"
+        )
+
+    def test_file_has_permission_allows_driver_private_with_access(self):
+        from sotrama.permissions import file_has_permission
+
+        file_doc = frappe._dict(
+            attached_to_doctype="Driver",
+            attached_to_name="DRV-001",
+            sotrama_private_driver_attachment=1,
+        )
+        with (
+            patch(
+                "sotrama.permissions.is_driver_private_attachment", return_value=True
+            ),
+            patch(
+                "sotrama.permissions.can_access_driver_private_attachment",
+                return_value=True,
+            ) as can_access,
+        ):
+            self.assertTrue(
+                file_has_permission(
+                    file_doc, user="hr@example.invalid", ptype="read"
+                )
+            )
+
+        can_access.assert_called_once_with(
+            file_doc, "hr@example.invalid", ptype="read"
+        )
+
+    def test_secure_driver_private_attachment_forces_private_storage(self):
+        from sotrama.permissions import secure_driver_private_attachment
+
+        doc = frappe._dict(
+            name="FILE-DRV-001",
+            attached_to_doctype="Driver",
+            attached_to_name="DRV-001",
+            file_url="/files/driver-license.pdf",
+            is_private=0,
+            sotrama_private_driver_attachment=0,
+            is_new=lambda: True,
+            get_doc_before_save=lambda: None,
+        )
+        with (
+            patch(
+                "sotrama.permissions.is_driver_private_attachment", return_value=True
+            ),
+            patch(
+                "sotrama.permissions._require_driver_private_file_write_access"
+            ),
+            patch(
+                "sotrama.permissions._is_remote_file", return_value=False
+            ),
+            patch(
+                "sotrama.permissions._validate_driver_private_file_paths"
+            ),
+            patch(
+                "sotrama.permissions._mark_duplicate_driver_file_rows"
+            ),
+        ):
+            secure_driver_private_attachment(doc, method="before_insert")
+
+        self.assertEqual(doc.is_private, 1)
+        self.assertEqual(doc.sotrama_private_driver_attachment, 1)
+
+    def test_secure_driver_private_attachment_rejects_remote_links(self):
+        from sotrama.permissions import secure_driver_private_attachment
+
+        doc = frappe._dict(
+            name="FILE-DRV-001",
+            attached_to_doctype="Driver",
+            attached_to_name="DRV-001",
+            file_url="https://files.example.invalid/license.pdf",
+            is_private=0,
+            sotrama_private_driver_attachment=0,
+            get_doc_before_save=lambda: None,
+            flags=frappe._dict(),
+        )
+        with (
+            patch(
+                "sotrama.permissions.is_driver_private_attachment", return_value=True
+            ),
+            patch(
+                "sotrama.permissions._require_driver_private_file_write_access"
+            ),
+            patch(
+                "sotrama.permissions._is_remote_file", return_value=True
+            ),
+            patch.object(doc.flags, "get", return_value=False),
+            self.assertRaises(frappe.ValidationError),
+        ):
+            secure_driver_private_attachment(doc, method="before_save")
+
+    def test_require_driver_private_file_write_access_allows_system_manager(self):
+        from sotrama.permissions import _require_driver_private_file_write_access
+
+        doc = frappe._dict(attached_to_doctype="Driver", attached_to_name="DRV-001")
+        with (
+            patch.dict(frappe.session, {"user": "system@example.invalid"}),
+            patch("frappe.get_roles", return_value=["System Manager"]),
+        ):
+            _require_driver_private_file_write_access(doc)
+
+    def test_require_driver_private_file_write_access_requires_hr_role(self):
+        from sotrama.permissions import _require_driver_private_file_write_access
+
+        doc = frappe._dict(attached_to_doctype="Driver", attached_to_name="DRV-001")
+        with (
+            patch.dict(frappe.session, {"user": "fleet@example.invalid"}),
+            patch("frappe.get_roles", return_value=["Fleet Manager"]),
+            patch(
+                "sotrama.permissions._has_hr_file_access", return_value=False
+            ),
+            self.assertRaises(frappe.PermissionError),
+        ):
+            _require_driver_private_file_write_access(doc)
+
+    def test_require_driver_private_file_write_access_requires_driver_write_access(
+        self,
+    ):
+        from sotrama.permissions import _require_driver_private_file_write_access
+
+        doc = frappe._dict(
+            attached_to_doctype="Driver",
+            attached_to_name="DRV-001",
+        )
+        with (
+            patch.dict(frappe.session, {"user": "hr@example.invalid"}),
+            patch("frappe.get_roles", return_value=["HR Manager"]),
+            patch(
+                "sotrama.permissions._has_hr_file_access", return_value=True
+            ),
+            patch(
+                "frappe.has_permission", return_value=False
+            ) as has_permission,
+            self.assertRaises(frappe.PermissionError),
+        ):
+            _require_driver_private_file_write_access(doc)
+
+        has_permission.assert_called_once_with(
+            "Driver", "write", doc="DRV-001", user="hr@example.invalid",
+            ignore_share_permissions=True,
+        )
+
+
+class TestSecurityMigrations(unittest.TestCase):
+    """One-off security data migrations must be idempotent and safe to rerun."""
+
+    def test_migrate_driver_private_attachments_marks_private(self):
+        from sotrama.migrations.security import migrate_driver_private_attachments
+
+        rows = [
+            frappe._dict(
+                name="FILE-001",
+                content_hash="hash-1",
+                file_url="/private/files/drv.pdf",
+                is_private=0,
+                attached_to_doctype="Driver",
+                attached_to_name="DRV-001",
+            )
+        ]
+        with (
+            patch(
+                "sotrama.permissions._ensure_driver_file_privacy_field"
+            ),
+            patch(
+                "sotrama.permissions._validate_driver_private_file_paths"
+            ),
+            patch(
+                "frappe.get_all", return_value=rows
+            ),
+            patch(
+                "frappe.get_meta"
+            ) as get_meta,
+            patch(
+                "sotrama.permissions.is_driver_private_attachment", return_value=True
+            ),
+        ):
+            get_meta.return_value.has_field.return_value = False
+
+            file_doc = frappe._dict(
+                name="FILE-001",
+                content_hash="hash-1",
+                file_url="/private/files/drv.pdf",
+                is_private=0,
+                sotrama_private_driver_attachment=0,
+                is_new=lambda: True,
+                get_doc_before_save=lambda: None,
+                attached_to_doctype="Driver",
+                attached_to_name="DRV-001",
+            )
+            with patch(
+                "frappe.get_doc", return_value=file_doc
+            ) as get_doc:
+                migrate_driver_private_attachments()
+
+            get_doc.assert_called_once_with("File", "FILE-001")
+            self.assertEqual(file_doc.is_private, 1)
+
+    def test_remediate_fleet_alert_todo_assignments_routes_to_role_user(self):
+        from sotrama.migrations.security import remediate_fleet_alert_todo_assignments
+
+        todos = [
+            frappe._dict(
+                name="TODO-001",
+                description="Vehicle Document Expiring: VEH-001",
+                reference_type="Vehicle",
+                reference_name="VEH-001",
+                allocated_to="fleet@example.invalid",
+            )
+        ]
+        with (
+            patch("frappe.get_all", return_value=todos),
+            patch(
+                "sotrama.tp.scheduler.common._user_for_role",
+                return_value="fleet-manager@example.invalid",
+            ) as user_for_role,
+            patch("frappe.db.set_value") as set_value,
+        ):
+            remediate_fleet_alert_todo_assignments()
+
+        user_for_role.assert_called_once_with(
+            "Fleet Manager", "Vehicle", "VEH-001",
+            role_users_cache={},
+        )
+        set_value.assert_called_once_with(
+            "ToDo", "TODO-001",
+            {"allocated_to": "fleet-manager@example.invalid"},
+            update_modified=False,
+        )
+
+
+class TestDriverPrivateFileWriteAccess(unittest.TestCase):
+    """_require_driver_private_file_write_access must enforce HR + Driver write."""
+
+    def test_allows_administrator_without_hr_check(self):
+        from sotrama.permissions import _require_driver_private_file_write_access
+
+        doc = frappe._dict(attached_to_doctype="Driver", attached_to_name="DRV-001")
+        with (
+            patch.dict(frappe.session, {"user": "Administrator"}),
+        ):
+            _require_driver_private_file_write_access(doc)
+
+    def test_allows_system_manager_without_hr_check(self):
+        from sotrama.permissions import _require_driver_private_file_write_access
+
+        doc = frappe._dict(attached_to_doctype="Driver", attached_to_name="DRV-001")
+        with (
+            patch.dict(frappe.session, {"user": "system@example.invalid"}),
+            patch("frappe.get_roles", return_value=["System Manager"]),
+        ):
+            _require_driver_private_file_write_access(doc)
+
+    def test_denies_non_hr_user(self):
+        from sotrama.permissions import _require_driver_private_file_write_access
+
+        doc = frappe._dict(attached_to_doctype="Driver", attached_to_name="DRV-001")
+        with (
+            patch.dict(frappe.session, {"user": "fleet@example.invalid"}),
+            patch("frappe.get_roles", return_value=["Fleet Manager"]),
+            patch(
+                "sotrama.permissions._has_hr_file_access", return_value=False
+            ),
+            self.assertRaises(frappe.PermissionError),
+        ):
+            _require_driver_private_file_write_access(doc)

@@ -1399,3 +1399,330 @@ class TestFleetSchedulerPrivacy(unittest.TestCase):
         self.assertIn("[SOTRAMA-DRIVER-COMPLIANCE:", compliance_todo.description)
         self.assertNotIn("Medical Fitness", compliance_todo.description)
         self.assertNotIn("Fit", compliance_todo.description)
+
+
+class TestSchedulerAuthorizationAndFallback(unittest.TestCase):
+    """Scheduler role assignment, Administrator fallback, and edge cases."""
+
+    def test_user_for_role_with_no_role_users_falls_back_to_administrator(self):
+        """When no enabled user has the role, _user_for_role returns Administrator."""
+        from sotrama.tp.scheduler import _user_for_role
+
+        with (
+            patch("frappe.get_all", return_value=[]) as get_all,
+            patch("frappe.db.exists", return_value=True),
+            patch("frappe.log_error") as log_error,
+        ):
+            assigned = _user_for_role("Fleet Manager", "Vehicle", "VEHICLE-001")
+
+        self.assertEqual(assigned, "Administrator")
+        get_all.assert_called_once()
+        log_error.assert_called_once()
+
+    def test_user_for_role_with_missing_document_falls_back_to_administrator(self):
+        """When the document does not exist, _user_for_role returns Administrator."""
+        from sotrama.tp.scheduler import _user_for_role
+
+        with (
+            patch("frappe.db.exists", return_value=False),
+            patch("frappe.log_error") as log_error,
+        ):
+            assigned = _user_for_role("Fleet Manager", "Vehicle", "VEHICLE-DELETED")
+
+        self.assertEqual(assigned, "Administrator")
+        log_error.assert_called_once()
+        self.assertIn("document missing or not known to exist", log_error.call_args.kwargs["message"])
+
+    def test_user_for_role_returns_first_authorized_user_in_cache_order(self):
+        """Multiple role users: returns the first one with read permission on the doc."""
+        from sotrama.tp.scheduler import _user_for_role
+
+        with (
+            patch(
+                "frappe.get_all",
+                side_effect=[
+                    ["fleet-a@example.invalid", "fleet-b@example.invalid"],
+                    ["fleet-a@example.invalid", "fleet-b@example.invalid"],
+                ],
+            ),
+            patch("frappe.db.exists", return_value=True),
+            patch(
+                "frappe.has_permission",
+                side_effect=[False, True],
+            ) as has_permission,
+        ):
+            assigned = _user_for_role("Fleet Manager", "Vehicle", "VEHICLE-B")
+
+        self.assertEqual(assigned, "fleet-b@example.invalid")
+        self.assertEqual(has_permission.call_count, 2)
+
+    def test_driver_license_expiry_with_no_expiring_drivers_creates_no_todo(self):
+        """When no driver has an expiring licence, no ToDo is created."""
+        from sotrama.tp.scheduler import check_driver_license_expiry
+
+        with (
+            patch("sotrama.tp.scheduler.drivers.get_tp_setting", return_value=60),
+            patch("frappe.get_all", side_effect=[[], []]),
+            patch("frappe.new_doc") as new_doc,
+        ):
+            check_driver_license_expiry()
+
+        new_doc.assert_not_called()
+
+    def test_driver_license_expiry_skips_non_active_drivers(self):
+        """Inactive drivers are excluded from licence expiry alerts."""
+        from sotrama.tp.scheduler import check_driver_license_expiry
+
+        active_driver = frappe._dict(
+            name="DRV-ACTIVE",
+            status="Active",
+            driver_name="Active Driver",
+            license_expiry=add_days(today(), 5),
+            safety_training_expiry=None,
+        )
+        inactive_driver = frappe._dict(
+            name="DRV-INACTIVE",
+            status="Inactive",
+            driver_name="Inactive Driver",
+            license_expiry=add_days(today(), 1),
+            safety_training_expiry=None,
+        )
+
+        with (
+            patch("sotrama.tp.scheduler.drivers.get_tp_setting", return_value=60),
+            patch(
+                "frappe.get_all",
+                side_effect=[[], [active_driver, inactive_driver], []],
+            ),
+            patch("frappe.db.exists", return_value=False),
+            patch("frappe.new_doc") as new_doc,
+        ):
+            check_driver_license_expiry()
+
+        new_doc.assert_not_called()
+
+    def test_maintenance_due_skips_retired_or_scrapped_vehicles(self):
+        """Maintenance Due alerts are not generated for Retired or Scrapped vehicles."""
+        from sotrama.tp.scheduler import check_maintenance_due
+
+        schedules = [
+            frappe._dict(
+                name="SCH-RETIRED",
+                vehicle="VEH-RETIRED",
+                next_due_date=add_days(today(), 2),
+                next_due_odometer=None,
+                job_type="Oil Change",
+            ),
+        ]
+        vehicles = [
+            frappe._dict(
+                name="VEH-RETIRED",
+                current_odometer=1000,
+                docstatus=1,
+                vehicle_status="Retired",
+            ),
+        ]
+        todos = [
+            frappe._dict(
+                name="TODO-RETIRED",
+                reference_name="SCH-RETIRED",
+                description="Maintenance Due: Oil Change (Vehicle: VEH-RETIRED)",
+                status="Open",
+            ),
+        ]
+
+        with (
+            patch("sotrama.tp.scheduler.maintenance.get_tp_setting", return_value=14),
+            patch(
+                "frappe.get_all",
+                side_effect=[schedules, vehicles, todos],
+            ),
+            patch("frappe.db.get_value", return_value="en"),
+            patch("frappe.db.set_value") as set_value,
+            patch("frappe.new_doc") as new_doc,
+        ):
+            check_maintenance_due()
+
+        new_doc.assert_not_called()
+        set_value.assert_any_call(
+            "ToDo", "TODO-RETIRED", "status", "Closed", update_modified=False
+        )
+
+    def test_maintenance_due_skips_cancelled_docstatus_vehicles(self):
+        """Maintenance Due alerts are not generated for vehicles with docstatus != 1."""
+        from sotrama.tp.scheduler import check_maintenance_due
+
+        schedules = [
+            frappe._dict(
+                name="SCH-CANCELLED-VEH",
+                vehicle="VEH-CANCELLED",
+                next_due_date=add_days(today(), 2),
+                next_due_odometer=None,
+                job_type="Inspection",
+            ),
+        ]
+        vehicles = [
+            frappe._dict(
+                name="VEH-CANCELLED",
+                current_odometer=1000,
+                docstatus=2,
+                vehicle_status="Active",
+            ),
+        ]
+        todos = [
+            frappe._dict(
+                name="TODO-CANCELLED-VEH",
+                reference_name="SCH-CANCELLED-VEH",
+                description="Maintenance Due: Inspection (Vehicle: VEH-CANCELLED)",
+                status="Open",
+            ),
+        ]
+
+        with (
+            patch("sotrama.tp.scheduler.maintenance.get_tp_setting", return_value=14),
+            patch(
+                "frappe.get_all",
+                side_effect=[schedules, vehicles, todos],
+            ),
+            patch("frappe.db.get_value", return_value="en"),
+            patch("frappe.db.set_value") as set_value,
+            patch("frappe.new_doc") as new_doc,
+        ):
+            check_maintenance_due()
+
+        new_doc.assert_not_called()
+        set_value.assert_any_call(
+            "ToDo", "TODO-CANCELLED-VEH", "status", "Closed", update_modified=False
+        )
+
+    def test_document_expiry_scheduler_with_no_vehicles_returns_early(self):
+        """check_document_expiries returns early when there are no submitted vehicles."""
+        from sotrama.tp.scheduler import check_document_expiries
+
+        with (
+            patch("sotrama.tp.scheduler.documents.get_tp_setting", return_value=30),
+            patch("frappe.get_all", return_value=[]),
+            patch("frappe.new_doc") as new_doc,
+        ):
+            check_document_expiries()
+
+        new_doc.assert_not_called()
+
+    def test_document_expiry_scheduler_skips_retired_or_scrapped_vehicles(self):
+        """Vehicle Document expiry alerts skip Retired/Scrapped vehicles."""
+        from sotrama.tp.scheduler import check_document_expiries
+
+        vehicle = frappe._dict(
+            name="VEH-RETIRED",
+            license_plate="RETIRED-001",
+            vehicle_status="Retired",
+        )
+        document = frappe._dict(
+            name="ROW-RETIRED",
+            parent=vehicle.name,
+            document_type="Insurance Certificate",
+            expiry_date=add_days(today(), 5),
+            status="Valid",
+        )
+        existing_todo = frappe._dict(
+            name="TODO-RETIRED",
+            reference_name=vehicle.name,
+            description="Vehicle Document Expiring: Insurance Certificate",
+            status="Open",
+        )
+
+        with (
+            patch("sotrama.tp.scheduler.documents.get_tp_setting", return_value=30),
+            patch(
+                "frappe.get_all",
+                side_effect=[[vehicle], [document], [existing_todo]],
+            ),
+            patch("frappe.db.set_value") as set_value,
+            patch("frappe.new_doc") as new_doc,
+        ):
+            check_document_expiries()
+
+        new_doc.assert_not_called()
+        set_value.assert_any_call(
+            "ToDo", "TODO-RETIRED", "status", "Closed", update_modified=False
+        )
+
+
+class TestUserForRoleEdgeCases(unittest.TestCase):
+    """_user_for_role edge cases: known_existing bypass, record-deleted-during-read,
+    and Guest skipping."""
+
+    def test_known_existing_skips_db_exists_check(self):
+        """known_existing=True bypasses frappe.db.exists entirely."""
+        from sotrama.tp.scheduler import _user_for_role
+
+        with (
+            patch(
+                "frappe.get_all",
+                side_effect=[
+                    ["fleet-a@example.invalid"],
+                    ["fleet-a@example.invalid"],
+                ],
+            ),
+            patch("frappe.db.exists") as db_exists,
+            patch("frappe.has_permission", return_value=True) as has_permission,
+        ):
+            assigned = _user_for_role(
+                "Fleet Manager", "Vehicle", "VEHICLE-001", known_existing=True
+            )
+
+        self.assertEqual(assigned, "fleet-a@example.invalid")
+        db_exists.assert_not_called()
+        has_permission.assert_called_once_with(
+            "Vehicle", "read", doc="VEHICLE-001", user="fleet-a@example.invalid"
+        )
+
+    def test_has_permission_does_not_exist_error_falls_back_to_administrator(self):
+        """A record deleted during the batch read triggers Administrator fallback."""
+        from sotrama.tp.scheduler import _user_for_role
+
+        with (
+            patch("frappe.db.exists", return_value=True),
+            patch(
+                "frappe.get_all",
+                side_effect=[
+                    ["fleet-a@example.invalid"],
+                    ["fleet-a@example.invalid"],
+                ],
+            ),
+            patch(
+                "frappe.has_permission",
+                side_effect=frappe.DoesNotExistError("Vehicle"),
+            ),
+            patch("frappe.log_error") as log_error,
+        ):
+            assigned = _user_for_role(
+                "Fleet Manager", "Vehicle", "VEHICLE-DELETED-DURING-READ"
+            )
+
+        self.assertEqual(assigned, "Administrator")
+        self.assertIn("record deleted during batch read", log_error.call_args.kwargs["message"])
+
+    def test_guest_role_user_is_skipped(self):
+        """Guest users with the role are skipped; falls back to Administrator."""
+        from sotrama.tp.scheduler import _user_for_role
+
+        with (
+            patch("frappe.db.exists", return_value=True),
+            patch(
+                "frappe.get_all",
+                side_effect=[
+                    ["Guest"],
+                    ["Guest"],
+                ],
+            ),
+            patch("frappe.log_error") as log_error,
+        ):
+            assigned = _user_for_role("Fleet Manager", "Vehicle", "VEHICLE-001")
+
+        self.assertEqual(assigned, "Administrator")
+        log_error.assert_called_once()
+        self.assertIn(
+            "no enabled role user with read permission",
+            log_error.call_args.kwargs["message"],
+        )

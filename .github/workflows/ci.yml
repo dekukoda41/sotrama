@@ -977,8 +977,8 @@ jobs:
           print("All security invariants passed.")
           PY
 
-  app-unit-tests:
-    name: App unit tests
+  app-lint-compile:
+    name: App lint and compile
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
@@ -998,12 +998,12 @@ jobs:
       - name: Compile Python
         run: python -m compileall -q sotrama
 
-      - name: Run Sotrama unit tests
+      - name: Run Sotrama unit tests (if frappe available)
         run: |
           if python -c "import frappe" 2>/dev/null; then
             python -m pytest sotrama/tests/ -v
           else
-            echo "Frappe not installed in unit-test job; tests run in frappe-integration job instead."
+            echo "Frappe not installed in lint/compile job; tests run in frappe-integration job instead."
           fi
 
   frappe-integration:
